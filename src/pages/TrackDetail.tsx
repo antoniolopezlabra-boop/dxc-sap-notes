@@ -1,0 +1,433 @@
+import { useCallback, useEffect, useState } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import {
+  ArrowLeft, CheckCircle2, Circle, CircleDot, Paperclip, Upload,
+  XCircle, FileText, Trash2,
+} from 'lucide-react'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../ctx/AuthContext'
+import type { NoteTrack, TrackStep, SystemRow, Profile } from '../lib/types'
+import { daysStuck, fmtDate, fmtDateTime, ENV_LABELS } from '../lib/workflow'
+import {
+  Panel, Spinner, ErrorBox, PriorityChip, StatusChip, DelayChip, ProgressBar, Chip, Modal,
+} from '../components/ui'
+import { trackProgress } from '../lib/workflow'
+
+export default function TrackDetail() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const { session, profile } = useAuth()
+  const [track, setTrack] = useState<NoteTrack | null>(null)
+  const [steps, setSteps] = useState<TrackStep[]>([])
+  const [systems, setSystems] = useState<SystemRow[]>([])
+  const [owner, setOwner] = useState<Profile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const isOwner = session?.user.id === track?.admin_id
+  const isStaff = profile?.role === 'superuser' || profile?.role === 'supervisor'
+
+  const load = useCallback(async () => {
+    const { data: t, error: tErr } = await supabase
+      .from('note_tracks').select('*, system_groups(name)').eq('id', id).single()
+    if (tErr || !t) { setError('Track no encontrado o sin permisos para verlo.'); setLoading(false); return }
+    const [s, sys, own] = await Promise.all([
+      supabase.from('track_steps').select('*').eq('track_id', id).order('step_order'),
+      supabase.from('systems').select('*').eq('group_id', t.group_id),
+      supabase.from('profiles').select('*').eq('id', t.admin_id).maybeSingle(),
+    ])
+    setTrack(t as NoteTrack)
+    setSteps((s.data as TrackStep[]) ?? [])
+    setSystems((sys.data as SystemRow[]) ?? [])
+    setOwner((own.data as Profile) ?? null)
+    setLoading(false)
+  }, [id])
+
+  useEffect(() => { load() }, [load])
+
+  async function openEvidence(path: string) {
+    const { data, error } = await supabase.storage.from('evidencias').createSignedUrl(path, 3600)
+    if (error || !data) { setError('No fue posible abrir la evidencia.'); return }
+    window.open(data.signedUrl, '_blank')
+  }
+
+  async function deleteTrack() {
+    if (!track) return
+    const { error: dErr } = await supabase.from('note_tracks').delete().eq('id', track.id)
+    if (dErr) { setError(dErr.message); return }
+    navigate('/notas')
+  }
+
+  if (loading) return <Spinner label="Cargando track…" />
+  if (!track) return <div className="max-w-[560px] mx-auto mt-10"><ErrorBox msg={error || 'Track no encontrado.'} /></div>
+
+  const days = daysStuck(track)
+  const progress = trackProgress(steps)
+  const currentStep = steps.find((s) => s.status === 'en_curso')
+
+  return (
+    <div className="flex flex-col gap-4 max-w-[1000px] mx-auto">
+      <div className="flex items-center gap-3 flex-wrap">
+        <Link to="/notas" className="btn btn-ghost no-underline px-3"><ArrowLeft size={15} /></Link>
+        <div className="flex-1">
+          <h1 className="m-0 text-[19px] font-extrabold flex items-center gap-2.5 flex-wrap">
+            Nota {track.note_number}
+            <PriorityChip p={track.priority} />
+            <StatusChip s={track.status} />
+            {track.status === 'en_progreso' && <DelayChip days={days} showOk />}
+          </h1>
+          <p className="m-0 text-xs text-[var(--muted)]">
+            Grupo <b className="text-[var(--text)]">{track.system_groups?.name}</b>
+            {isStaff && owner && <> · Administrador: <b className="text-[var(--text)]">{owner.full_name ?? owner.email}</b></>}
+          </p>
+        </div>
+        {isOwner && (
+          <button className="btn btn-danger px-3" title="Eliminar track" onClick={() => setConfirmDelete(true)}>
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Resumen */}
+      <Panel bodyClass="p-4">
+        <div className="grid gap-x-6 gap-y-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+          <Meta label="Inicio de seguimiento" value={fmtDate(track.start_date)} />
+          <Meta label="Orden de transporte" value={track.transport_order ?? '—'} mono />
+          <Meta label="SAROX" value={track.sarox ?? '—'} mono />
+          <Meta label="Avance" value={<ProgressBar pct={progress.pct} />} />
+          <Meta label="Sistemas del grupo" value={
+            <div className="flex flex-wrap gap-1.5">
+              {systems.map((s) => (
+                <Chip key={s.id} fg="#bcd6ff" bg="rgba(77,141,255,.1)" bd="rgba(77,141,255,.35)">
+                  {s.sid} · {ENV_LABELS[s.environment]}
+                </Chip>
+              ))}
+            </div>
+          } />
+        </div>
+        {track.observations && (
+          <div className="mt-3 pt-3 border-t border-[var(--border)] text-[12.5px] text-[var(--muted)]">
+            <b className="text-[var(--text)]">Observaciones:</b> {track.observations}
+          </div>
+        )}
+      </Panel>
+
+      {track.status === 'no_aplica' && (
+        <Panel bodyClass="p-4">
+          <div className="flex items-start gap-3">
+            <XCircle size={20} className="shrink-0 mt-0.5" style={{ color: '#a8b6d4' }} />
+            <div>
+              <div className="font-bold">Nota no aplicable a este sistema</div>
+              <div className="text-[12.5px] text-[var(--muted)] mt-1">Motivo: {track.na_reason ?? '—'}</div>
+              {track.na_evidence_path && (
+                <button className="btn btn-ghost mt-2.5" onClick={() => openEvidence(track.na_evidence_path!)}>
+                  <Paperclip size={13} /> Ver evidencia de la SNOTE
+                </button>
+              )}
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {track.status === 'completada' && (
+        <Panel bodyClass="p-4">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 size={20} style={{ color: '#34d399' }} />
+            <div>
+              <div className="font-bold" style={{ color: '#34d399' }}>Implementación concluida</div>
+              <div className="text-[12.5px] text-[var(--muted)]">
+                La nota se implementó en todos los ambientes del grupo. Finalizado el {fmtDateTime(track.completed_at)}.
+              </div>
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {/* Stepper */}
+      <Panel title={`Flujo de implementación · ${progress.done}/${progress.total} pasos`} icon={<FileText size={15} />} bodyClass="p-5">
+        <div className="flex flex-col">
+          {steps.map((s, i) => (
+            <StepRow key={s.id} step={s} isLast={i === steps.length - 1} track={track}
+              canAct={!!isOwner && track.status === 'en_progreso' && s.id === currentStep?.id}
+              onDone={load} onOpenEvidence={openEvidence} setGlobalError={setError} />
+          ))}
+        </div>
+      </Panel>
+
+      {error && <ErrorBox msg={error} />}
+
+      {confirmDelete && (
+        <Modal title="Eliminar track" onClose={() => setConfirmDelete(false)} width={440}>
+          <p className="mt-0 text-[13.5px] text-[var(--muted)]">
+            Se eliminará el seguimiento de la nota <b className="text-[var(--text)]">{track.note_number}</b> para el
+            grupo <b className="text-[var(--text)]">{track.system_groups?.name}</b>, incluyendo todos sus pasos.
+            Esta acción no se puede deshacer.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button className="btn btn-ghost" onClick={() => setConfirmDelete(false)}>Cancelar</button>
+            <button className="btn btn-danger" onClick={deleteTrack}>Eliminar definitivamente</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+function Meta({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div>
+      <div className="text-[10.5px] uppercase tracking-wide font-bold text-[var(--muted)] mb-1">{label}</div>
+      <div className={`text-[13px] font-semibold ${mono ? 'font-mono' : ''}`}>{value}</div>
+    </div>
+  )
+}
+
+function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGlobalError }: {
+  step: TrackStep
+  isLast: boolean
+  track: NoteTrack
+  canAct: boolean
+  onDone: () => void
+  onOpenEvidence: (p: string) => void
+  setGlobalError: (m: string) => void
+}) {
+  const { session } = useAuth()
+  const [inputValue, setInputValue] = useState('')
+  const [comment, setComment] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [naMode, setNaMode] = useState(false)
+  const [naReason, setNaReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const done = step.status === 'completado'
+  const current = step.status === 'en_curso'
+  const daysInStep = current && step.started_at
+    ? Math.max(0, Math.floor((Date.now() - new Date(step.started_at).getTime()) / 86_400_000))
+    : 0
+
+  async function uploadFile(f: File): Promise<string> {
+    const uid = session!.user.id
+    const ext = f.name.split('.').pop() || 'png'
+    const path = `${uid}/${track.id}/${step.step_key}_${Date.now()}.${ext}`
+    const { error } = await supabase.storage.from('evidencias').upload(path, f)
+    if (error) throw new Error(`Error al subir evidencia: ${error.message}`)
+    return path
+  }
+
+  async function completeStep() {
+    setErr('')
+    if (step.requires_input === 'transport_order' && !inputValue.trim()) {
+      setErr('Captura el número de la Orden de Transporte para continuar.'); return
+    }
+    if (step.requires_input === 'sarox' && !inputValue.trim()) {
+      setErr('Captura el número SAROX para continuar.'); return
+    }
+    setBusy(true)
+    try {
+      const now = new Date().toISOString()
+      let evidencePath: string | null = null
+      if (file) evidencePath = await uploadFile(file)
+
+      const { error: sErr } = await supabase.from('track_steps').update({
+        status: 'completado',
+        completed_at: now,
+        input_value: inputValue.trim() || null,
+        comment: comment.trim() || null,
+        evidence_path: evidencePath,
+      }).eq('id', step.id)
+      if (sErr) throw sErr
+
+      const trackPatch: Record<string, unknown> = {
+        current_step_order: step.step_order + 1,
+        last_progress_at: now,
+      }
+      if (step.requires_input === 'transport_order') trackPatch.transport_order = inputValue.trim()
+      if (step.requires_input === 'sarox') trackPatch.sarox = inputValue.trim()
+
+      // ¿Hay paso siguiente?
+      const { data: next } = await supabase.from('track_steps')
+        .select('id').eq('track_id', track.id).eq('step_order', step.step_order + 1).maybeSingle()
+
+      if (next) {
+        const { error: nErr } = await supabase.from('track_steps')
+          .update({ status: 'en_curso', started_at: now }).eq('id', next.id)
+        if (nErr) throw nErr
+      } else {
+        trackPatch.status = 'completada'
+        trackPatch.completed_at = now
+      }
+
+      const { error: tErr } = await supabase.from('note_tracks').update(trackPatch).eq('id', track.id)
+      if (tErr) throw tErr
+      onDone()
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e)
+      setErr(m); setGlobalError('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function finishNotApplicable() {
+    setErr('')
+    if (!naReason.trim()) { setErr('Indica el motivo por el que la nota no puede implementarse.'); return }
+    if (!file) { setErr('Adjunta la evidencia de la SNOTE (captura de pantalla) para finalizar.'); return }
+    setBusy(true)
+    try {
+      const now = new Date().toISOString()
+      const evidencePath = await uploadFile(file)
+      const { error: sErr } = await supabase.from('track_steps').update({
+        status: 'completado',
+        completed_at: now,
+        comment: `NO APLICA — ${naReason.trim()}`,
+        evidence_path: evidencePath,
+      }).eq('id', step.id)
+      if (sErr) throw sErr
+      const { error: tErr } = await supabase.from('note_tracks').update({
+        status: 'no_aplica',
+        na_reason: naReason.trim(),
+        na_evidence_path: evidencePath,
+        last_progress_at: now,
+        completed_at: now,
+      }).eq('id', track.id)
+      if (tErr) throw tErr
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex gap-4">
+      {/* Rail */}
+      <div className="flex flex-col items-center">
+        <div className="shrink-0 mt-0.5">
+          {done
+            ? <CheckCircle2 size={22} style={{ color: '#34d399' }} />
+            : current
+              ? <CircleDot size={22} style={{ color: '#4d8dff' }} className="pulse-dot rounded-full" />
+              : <Circle size={22} style={{ color: '#31487a' }} />}
+        </div>
+        {!isLast && <div className="w-px flex-1 my-1" style={{ background: done ? '#1f7a55' : '#22385f' }} />}
+      </div>
+
+      {/* Content */}
+      <div className={`flex-1 pb-5 ${isLast ? '' : ''}`}>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className={`text-[13.5px] font-bold ${current ? '' : done ? '' : 'text-[var(--muted)]'}`}>
+            {step.step_order}. {step.title}
+          </span>
+          {done && <span className="text-[11px] text-[var(--muted)]">{fmtDateTime(step.completed_at)}</span>}
+          {current && track.status === 'en_progreso' && <DelayChip days={daysInStep} showOk />}
+        </div>
+
+        {(current || done) && step.description && (
+          <div className="text-[12px] text-[var(--muted)] mt-1 max-w-[640px]">{step.description}</div>
+        )}
+
+        {done && (
+          <div className="flex flex-wrap items-center gap-2 mt-2">
+            {step.input_value && (
+              <Chip fg="#bcd6ff" bg="rgba(77,141,255,.1)" bd="rgba(77,141,255,.35)">
+                {step.requires_input === 'transport_order' ? 'OT' : step.requires_input === 'sarox' ? 'SAROX' : 'Dato'}: {step.input_value}
+              </Chip>
+            )}
+            {step.comment && <span className="text-[12px] text-[var(--muted)] italic">“{step.comment}”</span>}
+            {step.evidence_path && (
+              <button className="btn btn-ghost py-1 px-2.5 text-[11.5px]" onClick={() => onOpenEvidence(step.evidence_path!)}>
+                <Paperclip size={12} /> Evidencia
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Action zone */}
+        {canAct && (
+          <div className="mt-3 rounded-xl p-4 flex flex-col gap-3"
+            style={{ background: 'rgba(77,141,255,.05)', border: '1px solid rgba(77,141,255,.25)' }}>
+            {step.step_key === 'snote' && !naMode ? (
+              <>
+                <div className="text-[12.5px] text-[var(--muted)]">
+                  ¿La SNOTE indica que la nota <b className="text-[var(--text)]">es implementable</b> en este sistema?
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <button className="btn btn-success" onClick={completeStep} disabled={busy}>
+                    <CheckCircle2 size={14} /> Sí aplica — continuar flujo
+                  </button>
+                  <button className="btn btn-danger" onClick={() => setNaMode(true)} disabled={busy}>
+                    <XCircle size={14} /> No aplica — finalizar
+                  </button>
+                </div>
+                <FileInput file={file} setFile={setFile} label="Evidencia (opcional para continuar)" />
+              </>
+            ) : step.step_key === 'snote' && naMode ? (
+              <>
+                <div className="text-[12.5px] font-bold" style={{ color: '#fca5a5' }}>
+                  Finalizar como NO APLICABLE
+                </div>
+                <div>
+                  <label className="lbl">Motivo por el que no se implementará *</label>
+                  <textarea className="input resize-y min-h-[60px]" value={naReason}
+                    onChange={(e) => setNaReason(e.target.value)}
+                    placeholder="Ej. La SNOTE indica que la nota no es válida para esta versión / componente…" />
+                </div>
+                <FileInput file={file} setFile={setFile} label="Evidencia de la SNOTE (obligatoria) *" />
+                <div className="flex gap-2">
+                  <button className="btn btn-ghost" onClick={() => setNaMode(false)} disabled={busy}>Regresar</button>
+                  <button className="btn btn-danger" onClick={finishNotApplicable} disabled={busy}>
+                    {busy ? 'Guardando…' : 'Confirmar: no aplica'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {step.requires_input && (
+                  <div>
+                    <label className="lbl">
+                      {step.requires_input === 'transport_order' ? 'Número de Orden de Transporte (OT) *' : 'Número SAROX *'}
+                    </label>
+                    <input className="input font-mono" value={inputValue} onChange={(e) => setInputValue(e.target.value)}
+                      placeholder={step.requires_input === 'transport_order' ? 'Ej. S4DK901234' : 'Ej. SAROX-2026-0158'} />
+                  </div>
+                )}
+                <div>
+                  <label className="lbl">Comentario (opcional)</label>
+                  <input className="input" value={comment} onChange={(e) => setComment(e.target.value)}
+                    placeholder="Notas del paso, referencia de correo, ticket…" />
+                </div>
+                <FileInput file={file} setFile={setFile} label="Evidencia (opcional)" />
+                <div>
+                  <button className="btn btn-primary" onClick={completeStep} disabled={busy}>
+                    {busy ? 'Guardando…' : <><CheckCircle2 size={14} /> Completar paso</>}
+                  </button>
+                </div>
+              </>
+            )}
+            {err && <ErrorBox msg={err} />}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FileInput({ file, setFile, label }: { file: File | null; setFile: (f: File | null) => void; label: string }) {
+  return (
+    <div>
+      <label className="lbl">{label}</label>
+      <label className="btn btn-ghost cursor-pointer inline-flex">
+        <Upload size={13} /> {file ? file.name : 'Seleccionar archivo…'}
+        <input type="file" className="hidden" accept="image/*,.pdf"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      </label>
+      {file && (
+        <button className="ml-2 text-[11.5px] text-[var(--muted)] hover:text-[#fca5a5] cursor-pointer"
+          onClick={() => setFile(null)}>quitar</button>
+      )}
+    </div>
+  )
+}
