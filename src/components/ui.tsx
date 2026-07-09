@@ -78,11 +78,11 @@ export function StatusChip({ s }: { s: string }) {
 
 export function DelayChip({ days, showOk = false }: { days: number; showOk?: boolean }) {
   const lvl = delayLevel(days)
-  if (lvl === 'ok' && !showOk) return <span className="text-[var(--muted)] text-xs">{days} d</span>
+  if (lvl === 'ok' && !showOk) return <span className="text-[var(--muted)] text-xs">{days} d háb.</span>
   const m = DELAY_META[lvl]
   return (
     <Chip fg={m.fg} bg={m.bg} bd={m.bd}>
-      {lvl === 'ok' ? m.label : `${m.label} · ${days} d`}
+      {lvl === 'ok' ? m.label : `${m.label} · ${days} d háb.`}
     </Chip>
   )
 }

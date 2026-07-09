@@ -9,7 +9,7 @@ import { useAuth } from '../ctx/AuthContext'
 import type { NoteTrack, TrackStep, SystemRow, Profile, DelayLog } from '../lib/types'
 import {
   daysStuck, fmtDate, fmtDateTime, ENV_LABELS, trackProgress,
-  DELAY_REASONS, delayReasonLabel,
+  DELAY_REASONS, delayReasonLabel, businessDaysBetween,
 } from '../lib/workflow'
 import {
   Panel, Spinner, ErrorBox, PriorityChip, StatusChip, DelayChip, ProgressBar, Chip, Modal,
@@ -259,7 +259,7 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
   const done = step.status === 'completado'
   const current = step.status === 'en_curso'
   const daysInStep = current && step.started_at
-    ? Math.max(0, Math.floor((Date.now() - new Date(step.started_at).getTime()) / 86_400_000))
+    ? businessDaysBetween(new Date(step.started_at), new Date())
     : 0
 
   // Al volverse accionable (p.ej. tras reabrir un paso), precargar lo ya documentado.

@@ -49,13 +49,27 @@ export function delayReasonLabel(key: string | null | undefined): string {
 // Se invoca al crear una nota (Notas.tsx) y al cambiar sistemas (Sistemas.tsx),
 // de modo que los pasos de cada track siempre reflejan los ambientes vigentes.
 
-// ── Demoras ──────────────────────────────────────────────
+// ── Demoras (en DÍAS HÁBILES, lun–vie) ───────────────────
+// Debe coincidir con la función SQL public.sap_business_days usada por el
+// motor de alertas: cuenta los días entre semana posteriores a `from` hasta hoy.
 export type DelayLevel = 'ok' | 'yellow' | 'orange' | 'red'
+
+export function businessDaysBetween(from: Date, to: Date): number {
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate())
+  d.setDate(d.getDate() + 1) // desde el día siguiente al último avance
+  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate())
+  let count = 0
+  while (d <= end) {
+    const dow = d.getDay() // 0=domingo, 6=sábado
+    if (dow !== 0 && dow !== 6) count++
+    d.setDate(d.getDate() + 1)
+  }
+  return count
+}
 
 export function daysStuck(track: Pick<NoteTrack, 'status' | 'last_progress_at'>): number {
   if (track.status !== 'en_progreso') return 0
-  const ms = Date.now() - new Date(track.last_progress_at).getTime()
-  return Math.max(0, Math.floor(ms / 86_400_000))
+  return businessDaysBetween(new Date(track.last_progress_at), new Date())
 }
 
 export function delayLevel(days: number): DelayLevel {
