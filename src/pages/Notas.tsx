@@ -129,7 +129,7 @@ export default function Notas() {
               <thead>
                 <tr>
                   <th>Nota</th><th>Grupo de sistemas</th>{isStaff && <th>Administrador</th>}
-                  <th>Prioridad</th><th>Inicio</th><th>Paso actual</th><th>Avance</th><th>Estado</th><th>Días sin avance</th>
+                  <th>Prioridad</th><th>Inicio</th><th>Paso actual</th><th>Avance</th><th>Estado</th><th>Días sin seguimiento</th>
                 </tr>
               </thead>
               <tbody>

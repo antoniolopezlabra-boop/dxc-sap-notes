@@ -246,11 +246,14 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
   const [inputValue, setInputValue] = useState('')
   const [comment, setComment] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [docDate, setDocDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [delayReason, setDelayReason] = useState('')
   const [delayNote, setDelayNote] = useState('')
   const [delayDate, setDelayDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [delayBusy, setDelayBusy] = useState(false)
   const [delayErr, setDelayErr] = useState('')
+
+  const todayStr = new Date().toISOString().slice(0, 10)
   const [naMode, setNaMode] = useState(false)
   const [naReason, setNaReason] = useState('')
   const [busy, setBusy] = useState(false)
@@ -258,8 +261,13 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
 
   const done = step.status === 'completado'
   const current = step.status === 'en_curso'
-  const daysInStep = current && step.started_at
-    ? businessDaysBetween(new Date(step.started_at), new Date())
+  // Último seguimiento documentado del paso: su inicio o la demora más reciente.
+  const stepAnchorMs = Math.max(
+    step.started_at ? new Date(step.started_at).getTime() : 0,
+    step.delay_logged_at ? new Date(step.delay_logged_at).getTime() : 0,
+  )
+  const daysInStep = current && stepAnchorMs > 0
+    ? businessDaysBetween(new Date(stepAnchorMs), new Date())
     : 0
 
   // Al volverse accionable (p.ej. tras reabrir un paso), precargar lo ya documentado.
@@ -269,6 +277,7 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
       setComment(step.comment ?? '')
       setDelayReason(step.delay_reason ?? '')
       setDelayNote(step.delay_note ?? '')
+      setDocDate(new Date().toISOString().slice(0, 10))
       setNaMode(false)
     }
   }, [canAct, step.id, step.input_value, step.comment, step.delay_reason, step.delay_note])
@@ -290,15 +299,19 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
     if (step.requires_input === 'sarox' && !inputValue.trim()) {
       setErr('Captura el número SAROX para continuar.'); return
     }
+    if (!docDate) { setErr('Indica la fecha en que se realizó este paso.'); return }
+    if (docDate > todayStr) { setErr('La fecha del paso no puede ser futura.'); return }
     setBusy(true)
     try {
-      const now = new Date().toISOString()
+      // Ancla del seguimiento = fecha DOCUMENTADA (no el momento del clic).
+      // Permite capturar trabajo pasado sin que el semáforo se reinicie a hoy.
+      const docIso = new Date(docDate + 'T12:00:00').toISOString()
       let evidencePath: string | null = null
       if (file) evidencePath = await uploadFile(file)
 
       const { error: sErr } = await supabase.from('track_steps').update({
         status: 'completado',
-        completed_at: now,
+        completed_at: docIso,
         input_value: inputValue.trim() || null,
         comment: comment.trim() || null,
         evidence_path: evidencePath,
@@ -307,7 +320,7 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
 
       const trackPatch: Record<string, unknown> = {
         current_step_order: step.step_order + 1,
-        last_progress_at: now,
+        last_progress_at: docIso,
       }
       if (step.requires_input === 'transport_order') trackPatch.transport_order = inputValue.trim()
       if (step.requires_input === 'sarox') trackPatch.sarox = inputValue.trim()
@@ -318,11 +331,11 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
 
       if (next) {
         const { error: nErr } = await supabase.from('track_steps')
-          .update({ status: 'en_curso', started_at: now }).eq('id', next.id)
+          .update({ status: 'en_curso', started_at: docIso }).eq('id', next.id)
         if (nErr) throw nErr
       } else {
         trackPatch.status = 'completada'
-        trackPatch.completed_at = now
+        trackPatch.completed_at = docIso
       }
 
       const { error: tErr } = await supabase.from('note_tracks').update(trackPatch).eq('id', track.id)
@@ -365,10 +378,13 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
     }
   }
 
-  // Documenta (o actualiza / limpia) el motivo de demora del paso. No modifica
-  // last_progress_at: la demora no es avance, el semáforo debe seguir corriendo.
+  // Documenta (o actualiza / limpia) el motivo de demora del paso. Documentar una
+  // demora SÍ cuenta como seguimiento: el semáforo se ancla a la fecha documentada
+  // (no al momento del clic), igual que al completar un paso.
   async function updateDelay() {
     setDelayErr('')
+    if (delayReason && !delayDate) { setDelayErr('Indica la fecha del seguimiento.'); return }
+    if (delayReason && delayDate > todayStr) { setDelayErr('La fecha de seguimiento no puede ser futura.'); return }
     setDelayBusy(true)
     try {
       if (!delayReason) {
@@ -387,6 +403,9 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
           delay_reason: delayReason, delay_note: delayNote.trim() || null, delay_logged_at: loggedAt,
         }).eq('id', step.id)
         if (sErr) throw sErr
+        const { error: tErr } = await supabase.from('note_tracks')
+          .update({ last_progress_at: loggedAt }).eq('id', track.id)
+        if (tErr) throw tErr
       }
       onDone()
     } catch (e) {
@@ -500,6 +519,11 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
                 <div className="text-[12.5px] text-[var(--muted)]">
                   ¿La SNOTE indica que la nota <b className="text-[var(--text)]">es implementable</b> en este sistema?
                 </div>
+                <div className="w-[200px]">
+                  <label className="lbl">Fecha en que se evaluó *</label>
+                  <input className="input" type="date" value={docDate} max={todayStr}
+                    onChange={(e) => setDocDate(e.target.value)} />
+                </div>
                 <div className="flex gap-2 flex-wrap">
                   <button className="btn btn-success" onClick={completeStep} disabled={busy}>
                     <CheckCircle2 size={14} /> Sí aplica — continuar flujo
@@ -540,6 +564,11 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
                       placeholder={step.requires_input === 'transport_order' ? 'Ej. S4DK901234' : 'Ej. SAROX-2026-0158'} />
                   </div>
                 )}
+                <div className="w-[200px]">
+                  <label className="lbl">Fecha en que se realizó *</label>
+                  <input className="input" type="date" value={docDate} max={todayStr}
+                    onChange={(e) => setDocDate(e.target.value)} />
+                </div>
                 <div>
                   <label className="lbl">Comentario (opcional)</label>
                   <input className="input" value={comment} onChange={(e) => setComment(e.target.value)}
@@ -571,7 +600,8 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
                   </div>
                   <div className="w-[170px]">
                     <label className="lbl">Fecha de seguimiento</label>
-                    <input className="input" type="date" value={delayDate} onChange={(e) => setDelayDate(e.target.value)} />
+                    <input className="input" type="date" value={delayDate} max={todayStr}
+                      onChange={(e) => setDelayDate(e.target.value)} />
                   </div>
                 </div>
                 <div>
