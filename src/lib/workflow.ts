@@ -10,6 +10,18 @@ export const ENV_LABELS: Record<Env, string> = {
 
 export const ENV_ORDER: Env[] = ['DEV', 'QAS', 'PRE', 'SBX', 'PRD']
 
+// Paso del flujo cuya finalización implica que la nota quedó implementada en ese ambiente.
+export const IMPL_STEP_BY_ENV: Record<Env, string> = {
+  DEV: 'impl_dev',
+  QAS: 'impl_qa',
+  PRE: 'impl_pre',
+  SBX: 'impl_sbx',
+  PRD: 'impl_prd',
+}
+
+// Ambientes considerados "productivos" para el filtro rápido del dashboard de cobertura.
+export const PRODUCTIVE_ENVS: Env[] = ['PRD']
+
 export interface StepDef {
   key: string
   title: string

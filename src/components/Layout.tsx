@@ -51,6 +51,7 @@ export default function Layout() {
 
   const isAdmin = profile.role === 'admin'
   const isSuper = profile.role === 'superuser'
+  const isStaff = profile.role === 'superuser' || profile.role === 'supervisor'
   const initials = (profile.full_name || profile.email)
     .split(/[\s.@]+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join('')
 
@@ -75,6 +76,9 @@ export default function Layout() {
           <nav className="flex items-center flex-1">
             <NavLink to="/" end className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>Dashboard</NavLink>
             <NavLink to="/notas" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>Notas</NavLink>
+            {isStaff && (
+              <NavLink to="/cobertura" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>Cobertura</NavLink>
+            )}
             {isAdmin && (
               <NavLink to="/sistemas" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>Sistemas</NavLink>
             )}

@@ -119,6 +119,25 @@ export function AdminStackedBars({ data }: {
   )
 }
 
+// ── Barras por ambiente: implementados vs pendientes ──
+export function EnvCoverageBars({ data }: {
+  data: { env: string; Implementados: number; Pendientes: number }[]
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={210}>
+      <BarChart data={data} margin={{ top: 8, right: 12, left: -18, bottom: 0 }} barSize={34}>
+        <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey="env" tick={{ fill: AXIS, fontSize: 11 }} tickLine={false} axisLine={{ stroke: GRID }} interval={0} />
+        <YAxis tick={{ fill: AXIS, fontSize: 10.5 }} tickLine={false} axisLine={false} allowDecimals={false} width={38} />
+        <Tooltip content={<DarkTooltip />} cursor={{ fill: 'rgba(77,141,255,.05)' }} />
+        <Legend wrapperStyle={{ fontSize: 11.5, color: AXIS }} iconType="circle" iconSize={8} />
+        <Bar dataKey="Implementados" stackId="a" fill="#059669" stroke="#0c1832" strokeWidth={1} isAnimationActive={false} />
+        <Bar dataKey="Pendientes" stackId="a" fill="#ef4444" stroke="#0c1832" strokeWidth={1} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
 // ── Gauge radial: % de avance global ──
 export function ProgressGauge({ pct, size = 158, label = 'Avance global' }: {
   pct: number

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, CheckCircle2, Circle, CircleDot, Paperclip, Upload,
-  XCircle, FileText, Trash2,
+  XCircle, FileText, Trash2, RotateCcw,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
@@ -57,6 +57,37 @@ export default function TrackDetail() {
     const { error: dErr } = await supabase.from('note_tracks').delete().eq('id', track.id)
     if (dErr) { setError(dErr.message); return }
     navigate('/notas')
+  }
+
+  // Reabre un seguimiento finalizado (completada o no_aplica) para volver a documentar.
+  async function reopenTracking() {
+    if (!track) return
+    setError('')
+    const sorted = [...steps].sort((a, b) => a.step_order - b.step_order)
+    if (!sorted.length) return
+    const now = new Date().toISOString()
+    if (track.status === 'no_aplica') {
+      const snote = sorted[0]
+      const { error: sErr } = await supabase.from('track_steps')
+        .update({ status: 'en_curso', completed_at: null, comment: null }).eq('id', snote.id)
+      if (sErr) { setError(sErr.message); return }
+      const { error: tErr } = await supabase.from('note_tracks').update({
+        status: 'en_progreso', na_reason: null, na_evidence_path: null,
+        completed_at: null, current_step_order: snote.step_order, last_progress_at: now,
+      }).eq('id', track.id)
+      if (tErr) { setError(tErr.message); return }
+    } else if (track.status === 'completada') {
+      const last = sorted[sorted.length - 1]
+      const { error: sErr } = await supabase.from('track_steps')
+        .update({ status: 'en_curso', completed_at: null }).eq('id', last.id)
+      if (sErr) { setError(sErr.message); return }
+      const { error: tErr } = await supabase.from('note_tracks').update({
+        status: 'en_progreso', completed_at: null,
+        current_step_order: last.step_order, last_progress_at: now,
+      }).eq('id', track.id)
+      if (tErr) { setError(tErr.message); return }
+    }
+    load()
   }
 
   if (loading) return <Spinner label="Cargando track…" />
@@ -120,11 +151,18 @@ export default function TrackDetail() {
             <div>
               <div className="font-bold">Nota no aplicable a este sistema</div>
               <div className="text-[12.5px] text-[var(--muted)] mt-1">Motivo: {track.na_reason ?? '—'}</div>
-              {track.na_evidence_path && (
-                <button className="btn btn-ghost mt-2.5" onClick={() => openEvidence(track.na_evidence_path!)}>
-                  <Paperclip size={13} /> Ver evidencia de la SNOTE
-                </button>
-              )}
+              <div className="flex flex-wrap gap-2 mt-2.5">
+                {track.na_evidence_path && (
+                  <button className="btn btn-ghost" onClick={() => openEvidence(track.na_evidence_path!)}>
+                    <Paperclip size={13} /> Ver evidencia de la SNOTE
+                  </button>
+                )}
+                {isOwner && (
+                  <button className="btn btn-ghost" onClick={reopenTracking} title="Volver a documentar el seguimiento">
+                    <RotateCcw size={13} /> Reabrir seguimiento
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </Panel>
@@ -134,12 +172,17 @@ export default function TrackDetail() {
         <Panel bodyClass="p-4">
           <div className="flex items-center gap-3">
             <CheckCircle2 size={20} style={{ color: '#34d399' }} />
-            <div>
+            <div className="flex-1">
               <div className="font-bold" style={{ color: '#34d399' }}>Implementación concluida</div>
               <div className="text-[12.5px] text-[var(--muted)]">
                 La nota se implementó en todos los ambientes del grupo. Finalizado el {fmtDateTime(track.completed_at)}.
               </div>
             </div>
+            {isOwner && (
+              <button className="btn btn-ghost shrink-0" onClick={reopenTracking} title="Volver a documentar el último paso">
+                <RotateCcw size={13} /> Reabrir
+              </button>
+            )}
           </div>
         </Panel>
       )}
@@ -207,6 +250,15 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
     ? Math.max(0, Math.floor((Date.now() - new Date(step.started_at).getTime()) / 86_400_000))
     : 0
 
+  // Al volverse accionable (p.ej. tras reabrir un paso), precargar lo ya documentado.
+  useEffect(() => {
+    if (canAct) {
+      setInputValue(step.input_value ?? '')
+      setComment(step.comment ?? '')
+      setNaMode(false)
+    }
+  }, [canAct, step.id, step.input_value, step.comment])
+
   async function uploadFile(f: File): Promise<string> {
     const uid = session!.user.id
     const ext = f.name.split('.').pop() || 'png'
@@ -265,6 +317,35 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e)
       setErr(m); setGlobalError('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Regresa el flujo un paso: reabre el paso anterior (conservando lo documentado)
+  // y deja el paso actual como pendiente.
+  async function goBack() {
+    setErr(''); setBusy(true)
+    try {
+      const now = new Date().toISOString()
+      const { data: prev, error: pErr } = await supabase.from('track_steps')
+        .select('id').eq('track_id', track.id).eq('step_order', step.step_order - 1).maybeSingle()
+      if (pErr) throw pErr
+      if (!prev) throw new Error('No hay un paso anterior.')
+      const { error: e1 } = await supabase.from('track_steps')
+        .update({ status: 'pendiente', started_at: null }).eq('id', step.id)
+      if (e1) throw e1
+      const { error: e2 } = await supabase.from('track_steps')
+        .update({ status: 'en_curso', completed_at: null, started_at: now }).eq('id', prev.id)
+      if (e2) throw e2
+      const { error: e3 } = await supabase.from('note_tracks').update({
+        status: 'en_progreso', current_step_order: step.step_order - 1,
+        last_progress_at: now, completed_at: null,
+      }).eq('id', track.id)
+      if (e3) throw e3
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -406,6 +487,14 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
                   </button>
                 </div>
               </>
+            )}
+            {step.step_order > 1 && !naMode && (
+              <div className="pt-2 mt-1 border-t border-[rgba(77,141,255,.18)]">
+                <button className="text-[12px] text-[var(--muted)] hover:text-[var(--text)] cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-50"
+                  onClick={goBack} disabled={busy} title="Reabrir el paso anterior para corregir o agregar información">
+                  <ArrowLeft size={13} /> Regresar al paso anterior
+                </button>
+              </div>
             )}
             {err && <ErrorBox msg={err} />}
           </div>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Search, FileText, Layers } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
@@ -29,7 +29,8 @@ export default function Notas() {
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
 
-  const [q, setQ] = useState('')
+  const [searchParams] = useSearchParams()
+  const [q, setQ] = useState(searchParams.get('q') ?? '')
   const [fStatus, setFStatus] = useState('')
   const [fPrio, setFPrio] = useState('')
   const [fGroup, setFGroup] = useState('')
