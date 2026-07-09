@@ -3,8 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Search, FileText, Layers } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
-import type { NoteTrack, TrackStep, SystemGroup, SystemRow, Profile, Priority, Env } from '../lib/types'
-import { buildSteps, daysStuck, trackProgress, fmtDate } from '../lib/workflow'
+import type { NoteTrack, TrackStep, SystemGroup, SystemRow, Profile, Priority } from '../lib/types'
+import { daysStuck, trackProgress, fmtDate } from '../lib/workflow'
 import {
   Panel, Modal, Spinner, Empty, ErrorBox, PriorityChip, StatusChip, DelayChip, ProgressBar,
 } from '../components/ui'
@@ -199,10 +199,8 @@ function NewNoteModal({ groups, systems, onClose, onSaved }: {
     try {
       const uid = session!.user.id
       for (const gid of selected) {
-        const envs = new Set<Env>(systems.filter((s) => s.group_id === gid).map((s) => s.environment))
-        const defs = buildSteps(envs)
         const startIso = new Date(startDate + 'T08:00:00').toISOString()
-        const { data: track, error: tErr } = await supabase.from('note_tracks').insert({
+        const { error: tErr } = await supabase.from('note_tracks').insert({
           admin_id: uid,
           group_id: gid,
           note_number: num,
@@ -210,22 +208,12 @@ function NewNoteModal({ groups, systems, onClose, onSaved }: {
           start_date: startDate,
           observations: obs.trim() || null,
           last_progress_at: startIso,
-        }).select().single()
+        })
         if (tErr) throw tErr
-        const { error: sErr } = await supabase.from('track_steps').insert(
-          defs.map((d, i) => ({
-            track_id: track.id,
-            admin_id: uid,
-            step_key: d.key,
-            step_order: i + 1,
-            title: d.title,
-            description: d.description,
-            requires_input: d.requires ?? null,
-            status: i === 0 ? 'en_curso' : 'pendiente',
-            started_at: i === 0 ? startIso : null,
-          })),
-        )
-        if (sErr) throw sErr
+        // Los pasos se generan desde el catálogo único en el servidor, según los
+        // ambientes vigentes del grupo. Misma función que re-sincroniza al cambiar sistemas.
+        const { error: rErr } = await supabase.rpc('reconcile_group_tracks', { p_group_id: gid })
+        if (rErr) throw rErr
       }
       onSaved()
     } catch (e) {

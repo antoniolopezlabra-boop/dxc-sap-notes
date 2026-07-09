@@ -104,6 +104,9 @@ function GroupCard({ group, systems, trackCount, onChanged, setError }: {
     const { error } = await supabase.from('systems')
       .insert({ group_id: group.id, sid: newSid.trim().toUpperCase(), environment: newEnv })
     if (error) { setError(error.message); return }
+    // Re-sincroniza los pasos de los tracks del grupo con los ambientes vigentes.
+    const { error: rErr } = await supabase.rpc('reconcile_group_tracks', { p_group_id: group.id })
+    if (rErr) { setError(rErr.message); return }
     setNewSid(''); setAdding(false)
     onChanged()
   }
@@ -111,6 +114,8 @@ function GroupCard({ group, systems, trackCount, onChanged, setError }: {
   async function removeSystem(id: string) {
     const { error } = await supabase.from('systems').delete().eq('id', id)
     if (error) { setError(error.message); return }
+    const { error: rErr } = await supabase.rpc('reconcile_group_tracks', { p_group_id: group.id })
+    if (rErr) { setError(rErr.message); return }
     onChanged()
   }
 
