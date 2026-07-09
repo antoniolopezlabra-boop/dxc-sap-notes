@@ -80,7 +80,39 @@ Deno.serve(async (req) => {
   const db = createClient(url, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
 
   const { data: cfg } = await db.from("alert_config").select("*").eq("id", 1).single();
-  if (!cfg || cfg.enabled === false) {
+  if (!cfg) {
+    return new Response(JSON.stringify({ error: "sin alert_config" }), { status: 500, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  // Modo prueba: {"test_to":"correo"} envía un ejemplo (sin CC) para verificar entrega.
+  let reqBody: { test_to?: string } = {};
+  try { reqBody = await req.json(); } catch { /* sin body */ }
+  if (reqBody.test_to) {
+    if (!brevoKey) return new Response(JSON.stringify({ error: "no hay BREVO_API_KEY" }), { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
+    const sample: Digest = {
+      admin_id: "test", admin_email: reqBody.test_to, admin_name: "Prueba",
+      band: "yellow",
+      notes: [
+        { note: "0001234", priority: "P1", group: "S4-HANA", step: "VoBo y KIT para Calidad (KOF)", bd: 6 },
+        { note: "0005678", priority: "P2", group: "CPROC", step: "Solicitud de SAROX (TQS → KOF)", bd: 5 },
+      ],
+    };
+    const { subject, html } = buildEmail(sample, cfg.app_url);
+    const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": brevoKey, "Content-Type": "application/json", "accept": "application/json" },
+      body: JSON.stringify({
+        sender: { email: cfg.from_email, name: cfg.from_name },
+        to: [{ email: reqBody.test_to }],
+        subject: `[PRUEBA] ${subject}`,
+        htmlContent: html,
+      }),
+    });
+    const txt = await resp.text();
+    return new Response(JSON.stringify({ ok: resp.ok, test_to: reqBody.test_to, status: resp.status, brevo: txt.slice(0, 200) }, null, 2), { headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  if (cfg.enabled === false) {
     return new Response(JSON.stringify({ ok: true, skipped: "alertas deshabilitadas" }), { headers: { ...cors, "Content-Type": "application/json" } });
   }
 
