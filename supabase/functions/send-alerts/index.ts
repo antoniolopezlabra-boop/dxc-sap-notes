@@ -105,16 +105,17 @@ Deno.serve(async (req) => {
     if (dryRun) { results.push({ ...plan, sent: false, dryRun: true }); continue; }
 
     try {
+      const payload: Record<string, unknown> = {
+        sender: { email: cfg.from_email, name: cfg.from_name },
+        to: [{ email: d.admin_email, name: d.admin_name }],
+        subject,
+        htmlContent: html,
+      };
+      if (plan.cc.length > 0) payload.cc = plan.cc.map((e) => ({ email: e }));
       const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
         method: "POST",
         headers: { "api-key": brevoKey!, "Content-Type": "application/json", "accept": "application/json" },
-        body: JSON.stringify({
-          sender: { email: cfg.from_email, name: cfg.from_name },
-          to: [{ email: d.admin_email, name: d.admin_name }],
-          cc: plan.cc.map((e) => ({ email: e })),
-          subject,
-          htmlContent: html,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!resp.ok) {
         const body = await resp.text();
