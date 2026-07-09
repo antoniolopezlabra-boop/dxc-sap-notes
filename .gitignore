@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# graphify knowledge graph (local, served via MCP)
+graphify-out/
