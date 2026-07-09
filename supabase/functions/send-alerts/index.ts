@@ -41,13 +41,13 @@ function buildEmail(d: Digest, appUrl: string): { subject: string; html: string 
       <div style="font-size:19px;font-weight:800;margin-top:2px;">Notas en ${label}</div>
     </div>
     <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;padding:20px;">
-      <p style="margin:0 0 14px;">Hola <b>${esc(d.admin_name)}</b>, estas notas llevan tiempo sin seguimiento documentado y necesitan atención:</p>
+      <p style="margin:0 0 14px;">Hola <b>${esc(d.admin_name)}</b>, estas notas llevan tiempo sin poder avanzar y necesitan atención:</p>
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead>
           <tr style="background:#f3f4f6;text-align:left;">
             <th style="padding:8px 10px;">Nota</th><th style="padding:8px 10px;">Prioridad</th>
             <th style="padding:8px 10px;">Grupo</th><th style="padding:8px 10px;">Paso actual</th>
-            <th style="padding:8px 10px;text-align:center;">Sin seguimiento</th>
+            <th style="padding:8px 10px;text-align:center;">Sin avance</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>

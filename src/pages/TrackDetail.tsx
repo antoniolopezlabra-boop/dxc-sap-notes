@@ -65,6 +65,7 @@ export default function TrackDetail() {
   }
 
   // Reabre un seguimiento finalizado (completada o no_aplica) para volver a documentar.
+  // El ancla regresa al inicio documentado del paso reabierto (no al momento del clic).
   async function reopenTracking() {
     if (!track) return
     setError('')
@@ -78,7 +79,8 @@ export default function TrackDetail() {
       if (sErr) { setError(sErr.message); return }
       const { error: tErr } = await supabase.from('note_tracks').update({
         status: 'en_progreso', na_reason: null, na_evidence_path: null,
-        completed_at: null, current_step_order: snote.step_order, last_progress_at: now,
+        completed_at: null, current_step_order: snote.step_order,
+        last_progress_at: snote.started_at ?? now,
       }).eq('id', track.id)
       if (tErr) { setError(tErr.message); return }
     } else if (track.status === 'completada') {
@@ -88,7 +90,8 @@ export default function TrackDetail() {
       if (sErr) { setError(sErr.message); return }
       const { error: tErr } = await supabase.from('note_tracks').update({
         status: 'en_progreso', completed_at: null,
-        current_step_order: last.step_order, last_progress_at: now,
+        current_step_order: last.step_order,
+        last_progress_at: last.started_at ?? now,
       }).eq('id', track.id)
       if (tErr) { setError(tErr.message); return }
     }
@@ -261,12 +264,14 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
 
   const done = step.status === 'completado'
   const current = step.status === 'en_curso'
-  // Último seguimiento documentado del paso: su inicio o la demora más reciente.
-  const stepAnchorMs = Math.max(
-    step.started_at ? new Date(step.started_at).getTime() : 0,
-    step.delay_logged_at ? new Date(step.delay_logged_at).getTime() : 0,
+  // El paso lleva atorado desde la evidencia MÁS ANTIGUA disponible: su inicio
+  // (fecha del avance previo) o la demora documentada más vieja. Las demoras
+  // posteriores no reinician el conteo.
+  const stepAnchorMs = Math.min(
+    step.started_at ? new Date(step.started_at).getTime() : Infinity,
+    ...logs.map((l) => new Date(l.logged_at).getTime()),
   )
-  const daysInStep = current && stepAnchorMs > 0
+  const daysInStep = current && Number.isFinite(stepAnchorMs)
     ? businessDaysBetween(new Date(stepAnchorMs), new Date())
     : 0
 
@@ -350,24 +355,25 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
   }
 
   // Regresa el flujo un paso: reabre el paso anterior (conservando lo documentado)
-  // y deja el paso actual como pendiente.
+  // y deja el paso actual como pendiente. El ancla regresa al inicio documentado
+  // del paso reabierto — regresar no cuenta como avance.
   async function goBack() {
     setErr(''); setBusy(true)
     try {
       const now = new Date().toISOString()
       const { data: prev, error: pErr } = await supabase.from('track_steps')
-        .select('id').eq('track_id', track.id).eq('step_order', step.step_order - 1).maybeSingle()
+        .select('id, started_at').eq('track_id', track.id).eq('step_order', step.step_order - 1).maybeSingle()
       if (pErr) throw pErr
       if (!prev) throw new Error('No hay un paso anterior.')
       const { error: e1 } = await supabase.from('track_steps')
         .update({ status: 'pendiente', started_at: null }).eq('id', step.id)
       if (e1) throw e1
       const { error: e2 } = await supabase.from('track_steps')
-        .update({ status: 'en_curso', completed_at: null, started_at: now }).eq('id', prev.id)
+        .update({ status: 'en_curso', completed_at: null }).eq('id', prev.id)
       if (e2) throw e2
       const { error: e3 } = await supabase.from('note_tracks').update({
         status: 'en_progreso', current_step_order: step.step_order - 1,
-        last_progress_at: now, completed_at: null,
+        last_progress_at: prev.started_at ?? now, completed_at: null,
       }).eq('id', track.id)
       if (e3) throw e3
       onDone()
@@ -378,9 +384,10 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
     }
   }
 
-  // Documenta (o actualiza / limpia) el motivo de demora del paso. Documentar una
-  // demora SÍ cuenta como seguimiento: el semáforo se ancla a la fecha documentada
-  // (no al momento del clic), igual que al completar un paso.
+  // Documenta (o actualiza / limpia) el motivo de demora del paso.
+  // Una demora explica el atasco pero NO es avance: nunca adelanta el reloj.
+  // Si su fecha es anterior al último avance, lo jala hacia atrás (evidencia
+  // de que la nota lleva más tiempo atorada de lo registrado).
   async function updateDelay() {
     setDelayErr('')
     if (delayReason && !delayDate) { setDelayErr('Indica la fecha del seguimiento.'); return }
@@ -403,9 +410,11 @@ function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, se
           delay_reason: delayReason, delay_note: delayNote.trim() || null, delay_logged_at: loggedAt,
         }).eq('id', step.id)
         if (sErr) throw sErr
-        const { error: tErr } = await supabase.from('note_tracks')
-          .update({ last_progress_at: loggedAt }).eq('id', track.id)
-        if (tErr) throw tErr
+        if (new Date(loggedAt).getTime() < new Date(track.last_progress_at).getTime()) {
+          const { error: tErr } = await supabase.from('note_tracks')
+            .update({ last_progress_at: loggedAt }).eq('id', track.id)
+          if (tErr) throw tErr
+        }
       }
       onDone()
     } catch (e) {

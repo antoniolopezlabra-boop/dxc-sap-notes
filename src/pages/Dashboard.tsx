@@ -105,7 +105,7 @@ function DelayedList({ vms, showAdmin, profiles }: { vms: TrackVM[]; showAdmin?:
     .slice(0, 8)
   const nameOf = (id: string) => profiles?.find((p) => p.id === id)?.full_name?.split(' ')[0] ?? '—'
   if (!delayed.length) {
-    return <Empty icon={<CheckCircle2 size={30} />} title="Sin demoras" sub="Todos los tracks activos están dentro del tiempo esperado (menos de 5 días hábiles sin seguimiento)." />
+    return <Empty icon={<CheckCircle2 size={30} />} title="Sin demoras" sub="Todos los tracks activos están dentro del tiempo esperado (menos de 5 días hábiles sin avance)." />
   }
   return (
     <div className="flex flex-col">
@@ -386,7 +386,7 @@ export default function Dashboard() {
 
       {!isStaff && vms.some((v) => v.status === 'en_progreso') && (
         <div className="text-[11px] text-[var(--muted)] flex items-center gap-2 px-1">
-          <span className="w-2 h-2 rounded-full inline-block" style={{ background: DELAY_META.yellow.fg }} /> 5+ días hábiles sin seguimiento
+          <span className="w-2 h-2 rounded-full inline-block" style={{ background: DELAY_META.yellow.fg }} /> 5+ días hábiles sin avance
           <span className="w-2 h-2 rounded-full inline-block ml-2" style={{ background: DELAY_META.orange.fg }} /> 10+ hábiles
           <span className="w-2 h-2 rounded-full inline-block ml-2" style={{ background: DELAY_META.red.fg }} /> 15+ hábiles
           <span className="ml-3">Fecha de corte: {fmtDate(new Date().toISOString())}</span>
