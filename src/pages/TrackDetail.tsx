@@ -2,16 +2,18 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, CheckCircle2, Circle, CircleDot, Paperclip, Upload,
-  XCircle, FileText, Trash2, RotateCcw,
+  XCircle, FileText, Trash2, RotateCcw, Clock, AlarmClock,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
-import type { NoteTrack, TrackStep, SystemRow, Profile } from '../lib/types'
-import { daysStuck, fmtDate, fmtDateTime, ENV_LABELS } from '../lib/workflow'
+import type { NoteTrack, TrackStep, SystemRow, Profile, DelayLog } from '../lib/types'
+import {
+  daysStuck, fmtDate, fmtDateTime, ENV_LABELS, trackProgress,
+  DELAY_REASONS, delayReasonLabel,
+} from '../lib/workflow'
 import {
   Panel, Spinner, ErrorBox, PriorityChip, StatusChip, DelayChip, ProgressBar, Chip, Modal,
 } from '../components/ui'
-import { trackProgress } from '../lib/workflow'
 
 export default function TrackDetail() {
   const { id } = useParams()
@@ -21,6 +23,7 @@ export default function TrackDetail() {
   const [steps, setSteps] = useState<TrackStep[]>([])
   const [systems, setSystems] = useState<SystemRow[]>([])
   const [owner, setOwner] = useState<Profile | null>(null)
+  const [delayLogs, setDelayLogs] = useState<DelayLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -32,15 +35,17 @@ export default function TrackDetail() {
     const { data: t, error: tErr } = await supabase
       .from('note_tracks').select('*, system_groups(name)').eq('id', id).single()
     if (tErr || !t) { setError('Track no encontrado o sin permisos para verlo.'); setLoading(false); return }
-    const [s, sys, own] = await Promise.all([
+    const [s, sys, own, dl] = await Promise.all([
       supabase.from('track_steps').select('*').eq('track_id', id).order('step_order'),
       supabase.from('systems').select('*').eq('group_id', t.group_id),
       supabase.from('profiles').select('*').eq('id', t.admin_id).maybeSingle(),
+      supabase.from('step_delay_logs').select('*').eq('track_id', id).order('logged_at', { ascending: false }),
     ])
     setTrack(t as NoteTrack)
     setSteps((s.data as TrackStep[]) ?? [])
     setSystems((sys.data as SystemRow[]) ?? [])
     setOwner((own.data as Profile) ?? null)
+    setDelayLogs((dl.data as DelayLog[]) ?? [])
     setLoading(false)
   }, [id])
 
@@ -193,6 +198,7 @@ export default function TrackDetail() {
           {steps.map((s, i) => (
             <StepRow key={s.id} step={s} isLast={i === steps.length - 1} track={track}
               canAct={!!isOwner && track.status === 'en_progreso' && s.id === currentStep?.id}
+              logs={delayLogs.filter((l) => l.step_id === s.id)}
               onDone={load} onOpenEvidence={openEvidence} setGlobalError={setError} />
           ))}
         </div>
@@ -226,11 +232,12 @@ function Meta({ label, value, mono }: { label: string; value: React.ReactNode; m
   )
 }
 
-function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGlobalError }: {
+function StepRow({ step, isLast, track, canAct, logs, onDone, onOpenEvidence, setGlobalError }: {
   step: TrackStep
   isLast: boolean
   track: NoteTrack
   canAct: boolean
+  logs: DelayLog[]
   onDone: () => void
   onOpenEvidence: (p: string) => void
   setGlobalError: (m: string) => void
@@ -239,6 +246,11 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
   const [inputValue, setInputValue] = useState('')
   const [comment, setComment] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [delayReason, setDelayReason] = useState('')
+  const [delayNote, setDelayNote] = useState('')
+  const [delayDate, setDelayDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [delayBusy, setDelayBusy] = useState(false)
+  const [delayErr, setDelayErr] = useState('')
   const [naMode, setNaMode] = useState(false)
   const [naReason, setNaReason] = useState('')
   const [busy, setBusy] = useState(false)
@@ -255,9 +267,11 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
     if (canAct) {
       setInputValue(step.input_value ?? '')
       setComment(step.comment ?? '')
+      setDelayReason(step.delay_reason ?? '')
+      setDelayNote(step.delay_note ?? '')
       setNaMode(false)
     }
-  }, [canAct, step.id, step.input_value, step.comment])
+  }, [canAct, step.id, step.input_value, step.comment, step.delay_reason, step.delay_note])
 
   async function uploadFile(f: File): Promise<string> {
     const uid = session!.user.id
@@ -351,6 +365,37 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
     }
   }
 
+  // Documenta (o actualiza / limpia) el motivo de demora del paso. No modifica
+  // last_progress_at: la demora no es avance, el semáforo debe seguir corriendo.
+  async function updateDelay() {
+    setDelayErr('')
+    setDelayBusy(true)
+    try {
+      if (!delayReason) {
+        // limpiar demora del paso
+        const { error } = await supabase.from('track_steps')
+          .update({ delay_reason: null, delay_note: null, delay_logged_at: null }).eq('id', step.id)
+        if (error) throw error
+      } else {
+        const loggedAt = new Date(delayDate + 'T12:00:00').toISOString()
+        const { error: lErr } = await supabase.from('step_delay_logs').insert({
+          track_id: track.id, step_id: step.id, admin_id: session!.user.id,
+          reason: delayReason, note: delayNote.trim() || null, logged_at: loggedAt,
+        })
+        if (lErr) throw lErr
+        const { error: sErr } = await supabase.from('track_steps').update({
+          delay_reason: delayReason, delay_note: delayNote.trim() || null, delay_logged_at: loggedAt,
+        }).eq('id', step.id)
+        if (sErr) throw sErr
+      }
+      onDone()
+    } catch (e) {
+      setDelayErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDelayBusy(false)
+    }
+  }
+
   async function finishNotApplicable() {
     setErr('')
     if (!naReason.trim()) { setErr('Indica el motivo por el que la nota no puede implementarse.'); return }
@@ -404,10 +449,30 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
           </span>
           {done && <span className="text-[11px] text-[var(--muted)]">{fmtDateTime(step.completed_at)}</span>}
           {current && track.status === 'en_progreso' && <DelayChip days={daysInStep} showOk />}
+          {current && step.delay_reason && (
+            <Chip fg="#241a05" bg="rgba(230,164,23,.9)" bd="#f2b32e">
+              <AlarmClock size={11} /> {delayReasonLabel(step.delay_reason)}
+            </Chip>
+          )}
         </div>
 
         {(current || done) && step.description && (
           <div className="text-[12px] text-[var(--muted)] mt-1 max-w-[640px]">{step.description}</div>
+        )}
+
+        {/* Historial de demoras del paso */}
+        {logs.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1">
+            {logs.slice(0, 4).map((l) => (
+              <div key={l.id} className="flex items-center gap-2 text-[11.5px]">
+                <Clock size={11} style={{ color: '#e6a417' }} className="shrink-0" />
+                <span className="font-semibold" style={{ color: '#f0b940' }}>{delayReasonLabel(l.reason)}</span>
+                <span className="text-[var(--muted)]">· seguimiento {fmtDate(l.logged_at)}</span>
+                {l.note && <span className="text-[var(--muted)] italic truncate max-w-[280px]">“{l.note}”</span>}
+              </div>
+            ))}
+            {logs.length > 4 && <span className="text-[11px] text-[var(--muted)]">+{logs.length - 4} registros anteriores</span>}
+          </div>
         )}
 
         {done && (
@@ -488,6 +553,47 @@ function StepRow({ step, isLast, track, canAct, onDone, onOpenEvidence, setGloba
                 </div>
               </>
             )}
+
+            {/* Documentar demora (disponible en cualquier paso en curso) */}
+            {!naMode && (
+              <div className="mt-1 rounded-lg p-3.5 flex flex-col gap-2.5"
+                style={{ background: 'rgba(230,164,23,.07)', border: '1px solid rgba(230,164,23,.35)' }}>
+                <div className="flex items-center gap-1.5 text-[12.5px] font-bold" style={{ color: '#f0b940' }}>
+                  <AlarmClock size={14} /> ¿Este paso está demorado?
+                </div>
+                <div className="flex flex-wrap gap-2.5">
+                  <div className="flex-1 min-w-[220px]">
+                    <label className="lbl">Motivo de la demora</label>
+                    <select className="input" value={delayReason} onChange={(e) => setDelayReason(e.target.value)}>
+                      <option value="">— Sin demora —</option>
+                      {DELAY_REASONS.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="w-[170px]">
+                    <label className="lbl">Fecha de seguimiento</label>
+                    <input className="input" type="date" value={delayDate} onChange={(e) => setDelayDate(e.target.value)} />
+                  </div>
+                </div>
+                <div>
+                  <label className="lbl">Detalle (opcional)</label>
+                  <input className="input" value={delayNote} onChange={(e) => setDelayNote(e.target.value)}
+                    placeholder="Ej. Se solicitó aprobación a KOF el lunes, sin respuesta…" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button className="btn btn-warning" onClick={updateDelay} disabled={delayBusy}
+                    title={delayReason ? 'Registrar seguimiento de la demora' : 'Quitar la demora del paso'}>
+                    {delayBusy ? 'Guardando…' : <><AlarmClock size={14} /> {delayReason ? 'Actualizar demora' : 'Quitar demora'}</>}
+                  </button>
+                  {step.delay_logged_at && (
+                    <span className="text-[11.5px] text-[var(--muted)]">
+                      Último seguimiento: {fmtDate(step.delay_logged_at)}
+                    </span>
+                  )}
+                </div>
+                {delayErr && <ErrorBox msg={delayErr} />}
+              </div>
+            )}
+
             {step.step_order > 1 && !naMode && (
               <div className="pt-2 mt-1 border-t border-[rgba(77,141,255,.18)]">
                 <button className="text-[12px] text-[var(--muted)] hover:text-[var(--text)] cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-50"

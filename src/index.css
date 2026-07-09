@@ -136,6 +136,13 @@ body {
   }
   .btn-success:hover:not(:disabled) { filter: brightness(1.1); }
 
+  .btn-warning {
+    background: linear-gradient(180deg, #e6a417 0%, #c67c0a 100%);
+    border-color: #f2b32e;
+    color: #241a05;
+  }
+  .btn-warning:hover:not(:disabled) { filter: brightness(1.08); }
+
   .chip {
     display: inline-flex;
     align-items: center;

@@ -2,18 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   FileText, Activity, CheckCircle2, AlertTriangle, XCircle, TrendingUp,
-  PieChart as PieIcon, BarChart3, Clock, Users, ArrowRight,
+  PieChart as PieIcon, BarChart3, Clock, Users, ArrowRight, AlarmClock,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
 import type { NoteTrack, TrackStep, Profile } from '../lib/types'
 import {
-  daysStuck, delayLevel, trackProgress, DELAY_META, fmtDate,
+  daysStuck, delayLevel, trackProgress, DELAY_META, fmtDate, DELAY_REASONS,
 } from '../lib/workflow'
 import {
   Panel, StatCard, Spinner, Empty, PriorityChip, StatusChip, DelayChip, ProgressBar,
 } from '../components/ui'
-import { ActivityArea, PriorityDonut, AdminStackedBars, ProgressGauge } from '../components/charts'
+import { ActivityArea, PriorityDonut, AdminStackedBars, ProgressGauge, CategoryBars } from '../components/charts'
 
 interface TrackVM extends NoteTrack {
   steps: TrackStep[]
@@ -38,7 +38,7 @@ function useDashboardData() {
     async function load() {
       const [t, s, p] = await Promise.all([
         supabase.from('note_tracks').select('*, system_groups(name)').order('created_at', { ascending: false }),
-        supabase.from('track_steps').select('id, track_id, admin_id, step_key, step_order, title, status, started_at, completed_at, description, requires_input, input_value, comment, evidence_path'),
+        supabase.from('track_steps').select('id, track_id, admin_id, step_key, step_order, title, status, started_at, completed_at, description, requires_input, input_value, comment, evidence_path, delay_reason, delay_note, delay_logged_at'),
         isStaff ? supabase.from('profiles').select('*') : Promise.resolve({ data: [] }),
       ])
       if (!alive) return
@@ -226,6 +226,23 @@ export default function Dashboard() {
       })
   }, [isStaff, profiles, vms])
 
+  // Motivos de atraso: pasos activos (no completados) con un motivo de demora documentado.
+  const delayStats = useMemo(() => {
+    const counts = new Map<string, number>()
+    let total = 0
+    for (const s of steps) {
+      if (s.status !== 'completado' && s.delay_reason) {
+        counts.set(s.delay_reason, (counts.get(s.delay_reason) ?? 0) + 1)
+        total++
+      }
+    }
+    const rows = DELAY_REASONS
+      .map((r) => ({ label: r.label, value: counts.get(r.key) ?? 0, color: r.chart }))
+      .sort((a, b) => b.value - a.value)
+    const top = rows.find((r) => r.value > 0)
+    return { rows, total, top }
+  }, [steps])
+
   if (loading) return <Spinner label="Cargando dashboard…" />
 
   const title = isStaff ? 'Panorama general del equipo' : 'Mi panel de seguimiento'
@@ -295,6 +312,35 @@ export default function Dashboard() {
           </Panel>
         )}
       </div>
+
+      {/* Staff: motivos de atraso */}
+      {isStaff && (
+        <Panel title="Motivos de atraso" icon={<AlarmClock size={15} />} bodyClass="p-4"
+          actions={<span className="text-[11.5px] text-[var(--muted)]">
+            {delayStats.total} paso{delayStats.total === 1 ? '' : 's'} con demora documentada
+          </span>}>
+          <div className="grid gap-4" style={{ gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr)' }}>
+            <CategoryBars data={delayStats.rows} />
+            <div className="flex flex-col justify-center gap-1.5 border-l border-[var(--border)] pl-4">
+              <div className="text-[11px] uppercase tracking-wide font-bold text-[var(--muted)]">Principal motivo</div>
+              {delayStats.top ? (
+                <>
+                  <div className="text-[15px] font-extrabold" style={{ color: delayStats.top.color }}>{delayStats.top.label}</div>
+                  <div className="text-[12px] text-[var(--muted)]">
+                    {delayStats.top.value} de {delayStats.total} demoras
+                    {delayStats.total ? ` (${Math.round((delayStats.top.value / delayStats.total) * 100)}%)` : ''}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[13px] text-[var(--muted)]">Sin demoras documentadas por el equipo.</div>
+              )}
+              <div className="text-[11px] text-[var(--muted)] mt-1.5">
+                Cuenta pasos activos donde un administrador documentó una demora.
+              </div>
+            </div>
+          </div>
+        </Panel>
+      )}
 
       {/* Staff: per-admin table + recent tracks */}
       {isStaff && (

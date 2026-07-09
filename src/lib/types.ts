@@ -66,6 +66,20 @@ export interface TrackStep {
   status: StepStatus
   started_at: string | null
   completed_at: string | null
+  delay_reason: string | null
+  delay_note: string | null
+  delay_logged_at: string | null
+}
+
+export interface DelayLog {
+  id: string
+  track_id: string
+  step_id: string
+  admin_id: string
+  reason: string
+  note: string | null
+  logged_at: string
+  created_at: string
 }
 
 export interface AdminUser extends Profile {

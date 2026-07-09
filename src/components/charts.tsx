@@ -138,6 +138,32 @@ export function EnvCoverageBars({ data }: {
   )
 }
 
+// ── Barras horizontales: conteo por categoría (motivos de demora) ──
+export function CategoryBars({ data }: {
+  data: { label: string; value: number; color: string }[]
+}) {
+  const max = Math.max(1, ...data.map((d) => d.value))
+  const total = data.reduce((a, d) => a + d.value, 0)
+  return (
+    <div className="flex flex-col gap-2.5">
+      {data.map((d) => (
+        <div key={d.label} className="flex items-center gap-3">
+          <div className="w-[210px] text-[12px] shrink-0 truncate" style={{ color: d.value ? 'var(--text)' : 'var(--muted)' }} title={d.label}>
+            {d.label}
+          </div>
+          <div className="flex-1 h-[22px] rounded-md overflow-hidden" style={{ background: '#0a142b', border: '1px solid #1a2c50' }}>
+            <div className="h-full rounded-md flex items-center justify-end pr-2"
+              style={{ width: total ? `${Math.max(4, (d.value / max) * 100)}%` : '0%', background: d.color, minWidth: d.value ? 24 : 0 }}>
+              {d.value > 0 && <span className="text-[11px] font-extrabold" style={{ color: '#0b1220' }}>{d.value}</span>}
+            </div>
+          </div>
+        </div>
+      ))}
+      {total === 0 && <div className="text-[12px] text-[var(--muted)] text-center pt-1">Sin demoras documentadas por el momento</div>}
+    </div>
+  )
+}
+
 // ── Gauge radial: % de avance global ──
 export function ProgressGauge({ pct, size = 158, label = 'Avance global' }: {
   pct: number

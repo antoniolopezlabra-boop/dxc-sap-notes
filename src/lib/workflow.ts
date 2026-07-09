@@ -22,6 +22,28 @@ export const IMPL_STEP_BY_ENV: Record<Env, string> = {
 // Ambientes considerados "productivos" para el filtro rápido del dashboard de cobertura.
 export const PRODUCTIVE_ENVS: Env[] = ['PRD']
 
+// Catálogo de motivos de demora que el administrador puede documentar en un paso.
+export interface DelayReasonDef { key: string; label: string; chart: string }
+export const DELAY_REASONS: DelayReasonDef[] = [
+  { key: 'tqs_sin_seguimiento', label: 'TQS — no ha dado seguimiento', chart: '#4d8dff' },
+  { key: 'admin_sin_seguimiento', label: 'Admin — no le he dado seguimiento', chart: '#d97706' },
+  { key: 'kof_sin_autorizar', label: 'KOF aún no ha autorizado', chart: '#ef4444' },
+  { key: 'falta_permisos', label: 'Falta de permisos', chart: '#8b5cf6' },
+  { key: 'espera_sarox', label: 'En espera de SAROX', chart: '#059669' },
+]
+
+export const DELAY_REASON_LABEL: Record<string, string> = Object.fromEntries(
+  DELAY_REASONS.map((r) => [r.key, r.label]),
+)
+export const DELAY_REASON_COLOR: Record<string, string> = Object.fromEntries(
+  DELAY_REASONS.map((r) => [r.key, r.chart]),
+)
+
+export function delayReasonLabel(key: string | null | undefined): string {
+  if (!key) return '—'
+  return DELAY_REASON_LABEL[key] ?? key
+}
+
 export interface StepDef {
   key: string
   title: string
