@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, CheckCircle2, Circle, CircleDot, Paperclip, Upload,
-  XCircle, FileText, Trash2, RotateCcw, Clock, AlarmClock,
+  XCircle, FileText, Trash2, RotateCcw, Clock, AlarmClock, Pencil,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
-import type { NoteTrack, TrackStep, SystemRow, Profile, DelayLog } from '../lib/types'
+import type { NoteTrack, TrackStep, SystemRow, SystemGroup, Profile, DelayLog, Priority } from '../lib/types'
 import {
   daysStuck, fmtDate, fmtDateTime, ENV_LABELS, trackProgress,
   DELAY_REASONS, delayReasonLabel, businessDaysBetween,
@@ -24,9 +24,11 @@ export default function TrackDetail() {
   const [systems, setSystems] = useState<SystemRow[]>([])
   const [owner, setOwner] = useState<Profile | null>(null)
   const [delayLogs, setDelayLogs] = useState<DelayLog[]>([])
+  const [myGroups, setMyGroups] = useState<SystemGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
 
   const isOwner = session?.user.id === track?.admin_id
   const isStaff = profile?.role === 'superuser' || profile?.role === 'supervisor'
@@ -35,17 +37,19 @@ export default function TrackDetail() {
     const { data: t, error: tErr } = await supabase
       .from('note_tracks').select('*, system_groups(name)').eq('id', id).single()
     if (tErr || !t) { setError('Track no encontrado o sin permisos para verlo.'); setLoading(false); return }
-    const [s, sys, own, dl] = await Promise.all([
+    const [s, sys, own, dl, gr] = await Promise.all([
       supabase.from('track_steps').select('*').eq('track_id', id).order('step_order'),
       supabase.from('systems').select('*').eq('group_id', t.group_id),
       supabase.from('profiles').select('*').eq('id', t.admin_id).maybeSingle(),
       supabase.from('step_delay_logs').select('*').eq('track_id', id).order('logged_at', { ascending: false }),
+      supabase.from('system_groups').select('*').eq('admin_id', t.admin_id).order('name'),
     ])
     setTrack(t as NoteTrack)
     setSteps((s.data as TrackStep[]) ?? [])
     setSystems((sys.data as SystemRow[]) ?? [])
     setOwner((own.data as Profile) ?? null)
     setDelayLogs((dl.data as DelayLog[]) ?? [])
+    setMyGroups((gr.data as SystemGroup[]) ?? [])
     setLoading(false)
   }, [id])
 
@@ -122,9 +126,14 @@ export default function TrackDetail() {
           </p>
         </div>
         {isOwner && (
-          <button className="btn btn-danger px-3" title="Eliminar track" onClick={() => setConfirmDelete(true)}>
-            <Trash2 size={14} />
-          </button>
+          <>
+            <button className="btn btn-ghost px-3" title="Editar información de la nota" onClick={() => setShowEdit(true)}>
+              <Pencil size={14} /> Editar
+            </button>
+            <button className="btn btn-danger px-3" title="Eliminar track" onClick={() => setConfirmDelete(true)}>
+              <Trash2 size={14} />
+            </button>
+          </>
         )}
       </div>
 
@@ -209,6 +218,12 @@ export default function TrackDetail() {
 
       {error && <ErrorBox msg={error} />}
 
+      {showEdit && track && (
+        <EditNoteModal track={track} myGroups={myGroups}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => { setShowEdit(false); load() }} />
+      )}
+
       {confirmDelete && (
         <Modal title="Eliminar track" onClose={() => setConfirmDelete(false)} width={440}>
           <p className="mt-0 text-[13.5px] text-[var(--muted)]">
@@ -232,6 +247,149 @@ function Meta({ label, value, mono }: { label: string; value: React.ReactNode; m
       <div className="text-[10.5px] uppercase tracking-wide font-bold text-[var(--muted)] mb-1">{label}</div>
       <div className={`text-[13px] font-semibold ${mono ? 'font-mono' : ''}`}>{value}</div>
     </div>
+  )
+}
+
+// Edición de la información de la nota una vez generado el tracking.
+function EditNoteModal({ track, myGroups, onClose, onSaved }: {
+  track: NoteTrack
+  myGroups: SystemGroup[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [noteNumber, setNoteNumber] = useState(track.note_number)
+  const [priority, setPriority] = useState<Priority>(track.priority)
+  const [startDate, setStartDate] = useState(track.start_date)
+  const [obs, setObs] = useState(track.observations ?? '')
+  const [groupId, setGroupId] = useState(track.group_id)
+  const [applyAll, setApplyAll] = useState(true)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const groupChanged = groupId !== track.group_id
+
+  async function save() {
+    setError('')
+    const num = noteNumber.trim()
+    if (!num) { setError('Captura el número de la nota SAP.'); return }
+    if (!startDate) { setError('Captura la fecha de inicio del seguimiento.'); return }
+    setBusy(true)
+    try {
+      const fields = {
+        note_number: num,
+        priority,
+        start_date: startDate,
+        observations: obs.trim() || null,
+      }
+
+      // Tracks a los que aplican los cambios de datos (misma nota del mismo admin)
+      let ids: string[] = [track.id]
+      if (applyAll) {
+        const { data } = await supabase.from('note_tracks')
+          .select('id').eq('admin_id', track.admin_id).eq('note_number', track.note_number)
+        ids = (data ?? []).map((r) => r.id)
+        if (!ids.includes(track.id)) ids.push(track.id)
+      }
+
+      const { error: uErr } = await supabase.from('note_tracks').update(fields).in('id', ids)
+      if (uErr) throw uErr
+
+      // Si cambió la fecha de inicio: re-anclar los tracks que aún no tienen
+      // avance real (ningún paso completado) a la nueva fecha.
+      if (startDate !== track.start_date) {
+        const startIso = new Date(startDate + 'T08:00:00').toISOString()
+        const { data: doneSteps } = await supabase.from('track_steps')
+          .select('track_id').in('track_id', ids).eq('status', 'completado')
+        const withProgress = new Set((doneSteps ?? []).map((r) => r.track_id))
+        const fresh = ids.filter((tid) => !withProgress.has(tid))
+        if (fresh.length) {
+          const { error: aErr } = await supabase.from('note_tracks')
+            .update({ last_progress_at: startIso }).in('id', fresh)
+          if (aErr) throw aErr
+          const { error: sErr } = await supabase.from('track_steps')
+            .update({ started_at: startIso }).in('track_id', fresh).eq('status', 'en_curso')
+          if (sErr) throw sErr
+        }
+      }
+
+      // Cambio de grupo: mover solo ESTE track y re-sincronizar sus pasos
+      // con el landscape del grupo destino.
+      if (groupChanged) {
+        const { error: gErr } = await supabase.from('note_tracks')
+          .update({ group_id: groupId }).eq('id', track.id)
+        if (gErr) throw gErr
+        const { error: rErr } = await supabase.rpc('reconcile_group_tracks', { p_group_id: groupId })
+        if (rErr) throw rErr
+      }
+
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={`Editar nota ${track.note_number}`} onClose={onClose} width={560}>
+      <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-3 gap-3">
+          <div className="col-span-2">
+            <label className="lbl">Número de nota SAP *</label>
+            <input className="input" value={noteNumber} onChange={(e) => setNoteNumber(e.target.value)} />
+          </div>
+          <div>
+            <label className="lbl">Prioridad *</label>
+            <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
+              <option value="P1">P1 — Crítica</option>
+              <option value="P2">P2 — Alta</option>
+              <option value="P3">P3 — Media</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="lbl">Fecha de inicio del seguimiento *</label>
+          <input className="input" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          <p className="m-0 mt-1 text-[11px] text-[var(--muted)]">
+            Si el track aún no tiene pasos completados, el conteo de demora se re-ancla a esta fecha.
+          </p>
+        </div>
+
+        <div>
+          <label className="lbl">Observaciones</label>
+          <textarea className="input resize-y min-h-[60px]" value={obs} onChange={(e) => setObs(e.target.value)} />
+        </div>
+
+        <label className="flex items-center gap-2 text-[12.5px] text-[var(--muted)] cursor-pointer select-none">
+          <input type="checkbox" checked={applyAll} onChange={(e) => setApplyAll(e.target.checked)} />
+          Aplicar estos datos a todos mis tracks de la nota {track.note_number}
+        </label>
+
+        {myGroups.length > 1 && (
+          <div className="pt-3 border-t border-[var(--border)]">
+            <label className="lbl">Grupo de sistemas (solo este track)</label>
+            <select className="input" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+              {myGroups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            {groupChanged && (
+              <p className="m-0 mt-1.5 text-[11.5px]" style={{ color: '#fcd34d' }}>
+                ⚠ Al mover el track, sus pasos se re-sincronizan con el landscape del grupo destino.
+                Los pasos de ambientes que no existan ahí se eliminarán (incluidas sus demoras documentadas).
+              </p>
+            )}
+          </div>
+        )}
+
+        {error && <ErrorBox msg={error} />}
+
+        <div className="flex justify-end gap-2">
+          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>
+            {busy ? 'Guardando…' : 'Guardar cambios'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
