@@ -34,6 +34,7 @@ export default function Notas() {
   const [fStatus, setFStatus] = useState('')
   const [fPrio, setFPrio] = useState('')
   const [fGroup, setFGroup] = useState('')
+  const [fAdmin, setFAdmin] = useState('')
 
   const load = useCallback(async () => {
     const [t, s, g, sys, p] = await Promise.all([
@@ -72,13 +73,37 @@ export default function Notas() {
     })
   }, [tracks, steps])
 
+  // Todos los filtros se combinan (AND): pueden usarse 1 o varios a la vez.
   const filtered = vms.filter((v) =>
     (!q || v.note_number.toLowerCase().includes(q.toLowerCase().trim()))
     && (!fStatus || v.status === fStatus)
     && (!fPrio || v.priority === fPrio)
-    && (!fGroup || v.group_id === fGroup))
+    && (!fGroup || v.group_id === fGroup)
+    && (!fAdmin || v.admin_id === fAdmin))
 
   const nameOf = (id: string) => profiles.find((p) => p.id === id)?.full_name ?? '—'
+
+  // Administradores que tienen tracks registrados (para el filtro de staff)
+  const adminOptions = useMemo(() => {
+    const withTracks = new Set(tracks.map((t) => t.admin_id))
+    return profiles
+      .filter((p) => withTracks.has(p.id))
+      .sort((a, b) => (a.full_name ?? a.email).localeCompare(b.full_name ?? b.email))
+  }, [tracks, profiles])
+
+  // El dropdown de Grupo se acota al administrador seleccionado
+  const groupOptions = useMemo(
+    () => (fAdmin ? groups.filter((g) => g.admin_id === fAdmin) : groups),
+    [groups, fAdmin],
+  )
+
+  function onAdminChange(v: string) {
+    setFAdmin(v)
+    if (v && fGroup) {
+      const g = groups.find((x) => x.id === fGroup)
+      if (g && g.admin_id !== v) setFGroup('')
+    }
+  }
 
   if (loading) return <Spinner label="Cargando notas…" />
 
@@ -114,9 +139,21 @@ export default function Notas() {
             <option value="">Prioridad: todas</option>
             <option>P1</option><option>P2</option><option>P3</option>
           </select>
+          {isStaff && (
+            <select className="input w-auto max-w-[220px]" value={fAdmin} onChange={(e) => onAdminChange(e.target.value)}>
+              <option value="">Administrador: todos</option>
+              {adminOptions.map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name ?? p.email}</option>
+              ))}
+            </select>
+          )}
           <select className="input w-auto max-w-[220px]" value={fGroup} onChange={(e) => setFGroup(e.target.value)}>
             <option value="">Grupo: todos</option>
-            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            {groupOptions.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}{isStaff && !fAdmin ? ` — ${nameOf(g.admin_id).split(' ')[0]}` : ''}
+              </option>
+            ))}
           </select>
           <span className="text-xs text-[var(--muted)] ml-auto">{filtered.length} de {vms.length} tracks</span>
         </div>
