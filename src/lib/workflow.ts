@@ -1,4 +1,4 @@
-import type { Env, NoteTrack, TrackStep } from './types'
+import type { Env, NoteTrack, TrackStep, TrackStatus } from './types'
 
 export const ENV_LABELS: Record<Env, string> = {
   DEV: 'Desarrollo',
@@ -98,10 +98,16 @@ export const STATUS_META: Record<string, { label: string; fg: string; bg: string
   no_aplica: { label: 'No aplica', fg: '#a8b6d4', bg: 'rgba(100,116,139,.16)', bd: 'rgba(100,116,139,.5)', chart: '#64748b' },
 }
 
-// Progreso de un track a partir de sus pasos
-export function trackProgress(steps: Pick<TrackStep, 'status'>[]): { done: number; total: number; pct: number } {
+// Progreso de un track a partir de sus pasos. Un track "no aplica" es un
+// cierre definitivo: su proceso concluyó, así que el avance es 100% aunque
+// el resto de los pasos ya no se ejecuten.
+export function trackProgress(
+  steps: Pick<TrackStep, 'status'>[],
+  trackStatus?: TrackStatus,
+): { done: number; total: number; pct: number } {
   const total = steps.length
   const done = steps.filter((s) => s.status === 'completado').length
+  if (trackStatus === 'no_aplica') return { done, total, pct: 100 }
   return { done, total, pct: total ? Math.round((done / total) * 100) : 0 }
 }
 

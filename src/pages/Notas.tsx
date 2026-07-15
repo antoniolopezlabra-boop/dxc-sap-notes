@@ -67,7 +67,7 @@ export default function Notas() {
       return {
         ...t,
         days: daysStuck(t),
-        progress: trackProgress(ts),
+        progress: trackProgress(ts, t.status),
         currentTitle: t.status === 'completada' ? 'Concluido' : t.status === 'no_aplica' ? 'No aplicó' : current?.title ?? '—',
       }
     })

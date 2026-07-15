@@ -106,7 +106,7 @@ export default function TrackDetail() {
   if (!track) return <div className="max-w-[560px] mx-auto mt-10"><ErrorBox msg={error || 'Track no encontrado.'} /></div>
 
   const days = daysStuck(track)
-  const progress = trackProgress(steps)
+  const progress = trackProgress(steps, track.status)
   const currentStep = steps.find((s) => s.status === 'en_curso')
 
   return (
