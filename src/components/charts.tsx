@@ -80,6 +80,42 @@ export function CategoryBars({ data }: {
   )
 }
 
+// ── Barras por etapa, divididas en "en tiempo" y "con demora" ──
+export function StageBars({ data }: { data: { label: string; ok: number; late: number }[] }) {
+  const max = Math.max(1, ...data.map((d) => d.ok + d.late))
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-4 text-[11px] text-[var(--muted)] justify-end">
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: '#4d8dff' }} />En tiempo</span>
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: '#ef4444' }} />Con demora (5+ días hábiles)</span>
+      </div>
+      {data.map((d) => {
+        const tot = d.ok + d.late
+        return (
+          <div key={d.label} className="flex items-center gap-3">
+            <div className="w-[160px] text-[12px] shrink-0 truncate" style={{ color: tot ? 'var(--text)' : 'var(--muted)' }}>{d.label}</div>
+            <div className="flex-1 h-[22px] rounded-md overflow-hidden flex" style={{ background: '#0a142b', border: '1px solid #1a2c50' }}>
+              {d.ok > 0 && (
+                <div className="h-full flex items-center justify-center" title={`${d.ok} en tiempo`}
+                  style={{ width: `${(d.ok / max) * 100}%`, minWidth: 22, background: '#4d8dff' }}>
+                  <span className="text-[11px] font-extrabold" style={{ color: '#0b1220' }}>{d.ok}</span>
+                </div>
+              )}
+              {d.late > 0 && (
+                <div className="h-full flex items-center justify-center" title={`${d.late} con demora`}
+                  style={{ width: `${(d.late / max) * 100}%`, minWidth: 22, background: '#ef4444', borderLeft: d.ok > 0 ? '2px solid #0a142b' : undefined }}>
+                  <span className="text-[11px] font-extrabold" style={{ color: '#0b1220' }}>{d.late}</span>
+                </div>
+              )}
+            </div>
+            <div className="w-6 text-right text-[12px] font-bold shrink-0" style={{ color: tot ? 'var(--text)' : 'var(--muted)' }}>{tot}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Gauge radial: % de avance global ──
 export function ProgressGauge({ pct, size = 158, label = 'Avance global' }: {
   pct: number

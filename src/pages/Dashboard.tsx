@@ -4,17 +4,17 @@ import {
   FileText, CheckCircle2, AlertTriangle, Factory, Users, ArrowRight, AlarmClock,
   Layers, Route, Gauge, ShieldAlert,
 } from 'lucide-react'
-import { supabase } from '../lib/supabase'
+import { supabase, selectAll } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
 import type { NoteTrack, TrackStep, Profile, SystemRow, Priority } from '../lib/types'
 import {
   daysStuck, delayLevel, trackProgress, DELAY_META, fmtDate, DELAY_REASONS,
-  PIPELINE_STAGES, stageIndex,
+  PIPELINE_STAGES, stageIndex, delayReasonLabel,
 } from '../lib/workflow'
 import {
   Panel, StatCard, Spinner, Empty, PriorityChip, StatusChip, DelayChip, ProgressBar, Reading,
 } from '../components/ui'
-import { ProgressGauge, CategoryBars } from '../components/charts'
+import { ProgressGauge, CategoryBars, StageBars } from '../components/charts'
 
 interface TrackVM extends NoteTrack {
   steps: TrackStep[]
@@ -24,7 +24,7 @@ interface TrackVM extends NoteTrack {
   currentTitle: string
 }
 
-interface PrdPending { sid: string; group: string; trackId: string; stage: number; days: number; adminId: string }
+interface PrdPending { sid: string; group: string; trackId: string; stage: number; days: number; adminId: string; reason: string | null }
 interface NotePrd {
   note: string
   priority: Priority
@@ -57,9 +57,9 @@ function useDashboardData() {
     let alive = true
     async function load() {
       const [t, s, sy, p] = await Promise.all([
-        supabase.from('note_tracks').select('*, system_groups(name)').order('created_at', { ascending: false }),
-        supabase.from('track_steps').select('id, track_id, admin_id, step_key, step_order, title, status, started_at, completed_at, delay_reason, delay_logged_at'),
-        supabase.from('systems').select('id, group_id, sid, environment'),
+        selectAll<NoteTrack>(() => supabase.from('note_tracks').select('*, system_groups(name)').order('created_at', { ascending: false }).order('id')),
+        selectAll<TrackStep>(() => supabase.from('track_steps').select('id, track_id, admin_id, step_key, step_order, title, status, started_at, completed_at, delay_reason, delay_logged_at').order('id')),
+        selectAll<SystemRow>(() => supabase.from('systems').select('id, group_id, sid, environment').order('id')),
         isStaff ? supabase.from('profiles').select('*') : Promise.resolve({ data: [] }),
       ])
       if (!alive) return
@@ -125,12 +125,13 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     if (!prd.length) continue
     const implPrd = v.steps.find((s) => s.step_key === 'impl_prd')
     const isDone = v.status === 'completada' || implPrd?.status === 'completado'
-    const stage = stageIndex(v.steps.find((s) => s.status === 'en_curso')?.step_key)
+    const cur = v.steps.find((s) => s.status === 'en_curso')
+    const stage = stageIndex(cur?.step_key)
     for (const sy of prd) {
       if (isDone) n.done.push(sy.sid)
       else n.pend.push({
         sid: sy.sid, group: v.system_groups?.name ?? '—', trackId: v.id,
-        stage, days: v.days, adminId: v.admin_id,
+        stage, days: v.days, adminId: v.admin_id, reason: cur?.delay_reason ?? null,
       })
     }
   }
@@ -144,11 +145,28 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     .sort((a, b) => worst(b) - worst(a) || b.pend.length - a.pend.length)
   const sysDone = withPrd.reduce((a, n) => a + n.done.length, 0)
   const sysPend = withPrd.reduce((a, n) => a + n.pend.length, 0)
-  const funnel = PIPELINE_STAGES.map((s, i) => ({
-    label: s.label,
-    value: pending.reduce((a, n) => a + n.pend.filter((p) => p.stage === i).length, 0),
-    color: i === 0 ? '#ef4444' : '#4d8dff',
-  }))
+  // Cada nota se cuenta UNA vez, en la etapa de su sistema PRD más atrasado.
+  const stageOf = (n: NotePrd) => n.pend.reduce((m, p) => Math.min(m, p.stage), PIPELINE_STAGES.length - 1)
+  const isLate = (n: NotePrd) => delayLevel(worst(n)) !== 'ok'
+  const funnel = PIPELINE_STAGES.map((s, i) => {
+    const ns = pending.filter((n) => stageOf(n) === i)
+    return { label: s.label, ok: ns.filter((n) => !isLate(n)).length, late: ns.filter(isLate).length }
+  })
+  const lateNotes = pending.filter(isLate)
+  const reasonCount = new Map<string, number>()
+  for (const n of lateNotes) {
+    for (const r of new Set(n.pend.map((p) => p.reason).filter((x): x is string => !!x))) {
+      reasonCount.set(r, (reasonCount.get(r) ?? 0) + 1)
+    }
+  }
+  const topEntry = [...reasonCount.entries()].sort((a, b) => b[1] - a[1])[0]
+  const topLateReason = topEntry ? { key: topEntry[0], n: topEntry[1] } : null
+  const stageSummary = {
+    evalOk: pending.filter((n) => stageOf(n) === 0 && !isLate(n)).length,
+    advOk: pending.filter((n) => stageOf(n) > 0 && !isLate(n)).length,
+    late: lateNotes.length,
+    topLateReason,
+  }
   return {
     total: all.length,
     inImpl: inImpl.length,
@@ -157,7 +175,7 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     noAplicaron: all.length - inImpl.length,
     sinPrd: inImpl.length - withPrd.length,
     withPrd: withPrd.length,
-    closed, pending, worst,
+    closed, pending, worst, stageOf, stageSummary,
     sysDone, sysPend,
     pct: sysDone + sysPend ? Math.round((sysDone / (sysDone + sysPend)) * 100) : 100,
     funnel,
@@ -293,11 +311,14 @@ export default function Dashboard() {
   const sub = isStaff
     ? 'Estado de la remediación con foco en los ambientes productivos'
     : 'Seguimiento de tus notas y sistemas asignados'
-  const notStarted = prd.funnel[0]?.value ?? 0
   const tus = isStaff ? '' : 'tus '
   const critNotes = prd.pending.filter((n) => prd.worst(n) >= 15).length
   const topPending = prd.pending[0]
-  const maxStage = prd.funnel.reduce((m, f) => (f.value > m.value ? f : m), prd.funnel[0])
+  const ss = prd.stageSummary
+  const stageParts: React.ReactNode[] = []
+  if (ss.evalOk) stageParts.push(<><Hl c={BLUE}>{ss.evalOk}</Hl> {plural(ss.evalOk, 'recién iniciada, en evaluación', 'recién iniciadas, en evaluación')} dentro del tiempo esperado</>)
+  if (ss.advOk) stageParts.push(<><Hl c={BLUE}>{ss.advOk}</Hl> {plural(ss.advOk, 'avanza', 'avanzan')} en tiempo hacia Producción</>)
+  if (ss.late) stageParts.push(<><Hl c={RED}>{ss.late}</Hl> {plural(ss.late, 'presenta', 'presentan')} demora{ss.topLateReason && <> ({ss.topLateReason.n === ss.late ? (ss.late === 1 ? 'su motivo' : 'en todas el motivo') : <>{ss.topLateReason.n} de ellas con motivo</>}{' '}<Hl c={RED}>«{delayReasonLabel(ss.topLateReason.key)}»</Hl>)</>}</>)
   const sinMotivo = Math.max(0, stats.active.length - delayStats.total)
   const topAdmin = adminRows.find((r) => r.crit > 0)
   const idleAdmins = adminRows.filter((r) => r.act === 0).length
@@ -399,17 +420,17 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        <Panel title="¿Qué tan lejos están de Producción?" icon={<Route size={15} />} bodyClass="p-4"
+        <Panel title="Etapa actual de las notas pendientes en Producción" icon={<Route size={15} />} bodyClass="p-4"
           reading={<>
-            Ubica cada sistema productivo pendiente en la etapa donde va su seguimiento: entre más arriba, más lejos está de Producción.{' '}
-            {prd.sysPend > 0 && (notStarted * 2 >= prd.sysPend
-              ? <><Hl c={RED}>{notStarted} de {prd.sysPend}</Hl> ni siquiera han iniciado (siguen en evaluación SNOTE): el cuello de botella está en el arranque, no en las autorizaciones.</>
-              : <>La mayor concentración está en <Hl c={BLUE}>{maxStage.label}</Hl> ({maxStage.value} {plural(maxStage.value, 'sistema')}).</>)}
+            Muestra en qué etapa del flujo va cada nota pendiente en Producción (si sus sistemas avanzan a distinto ritmo, se ubica
+            en la etapa más atrasada). En azul, las que van dentro del tiempo esperado; en rojo, las que llevan 5 o más días hábiles sin avance.{' '}
+            {stageParts.length > 0 && <>De <Hl>{prd.pending.length}</Hl> {plural(prd.pending.length, 'nota', 'notas')}:{' '}
+              {stageParts.map((part, k) => (
+                <span key={k}>{k > 0 && (k === stageParts.length - 1 ? ' y ' : ', ')}{part}</span>
+              ))}.</>}
           </>}>
-          {prd.sysPend ? (
-            <>
-              <CategoryBars data={prd.funnel} />
-            </>
+          {prd.pending.length ? (
+            <StageBars data={prd.funnel} />
           ) : (
             <Empty icon={<CheckCircle2 size={30} />} title="Sin pendientes en Producción" sub="Todas las notas con alcance productivo ya están implementadas." />
           )}
@@ -435,7 +456,7 @@ export default function Dashboard() {
               <tbody>
                 {prd.pending.map((n) => {
                   const tot = n.done.length + n.pend.length
-                  const farthest = n.pend.reduce((m, p) => Math.min(m, p.stage), PIPELINE_STAGES.length - 1)
+                  const farthest = prd.stageOf(n)
                   const admins = [...new Set(n.pend.map((p) => p.adminId))]
                   return (
                     <tr key={n.note} className="rowlink" onClick={() => navigate(`/notas?q=${n.note}`)}>

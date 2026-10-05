@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Server, Trash2, Pencil, Check, X } from 'lucide-react'
-import { supabase } from '../lib/supabase'
+import { supabase, selectAll } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
 import type { SystemGroup, SystemRow, Env } from '../lib/types'
 import { ENV_LABELS, ENV_ORDER } from '../lib/workflow'
@@ -17,9 +17,9 @@ export default function Sistemas() {
 
   const load = useCallback(async () => {
     const [g, s, t] = await Promise.all([
-      supabase.from('system_groups').select('*').order('name'),
-      supabase.from('systems').select('*').order('sid'),
-      supabase.from('note_tracks').select('id, group_id'),
+      selectAll<SystemGroup>(() => supabase.from('system_groups').select('*').order('name').order('id')),
+      selectAll<SystemRow>(() => supabase.from('systems').select('*').order('sid').order('id')),
+      selectAll<{ id: string; group_id: string }>(() => supabase.from('note_tracks').select('id, group_id').order('id')),
     ])
     setGroups((g.data as SystemGroup[]) ?? [])
     setSystems((s.data as SystemRow[]) ?? [])

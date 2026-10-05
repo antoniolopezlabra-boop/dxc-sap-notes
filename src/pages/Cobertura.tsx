@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Layers, Search, AlertTriangle, CheckCircle2, Target, ServerCrash, Factory, ListChecks,
 } from 'lucide-react'
-import { supabase } from '../lib/supabase'
+import { supabase, selectAll } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
 import type { NoteTrack, TrackStep, SystemRow, SystemGroup, Profile, Env, Priority } from '../lib/types'
 import { ENV_LABELS, ENV_ORDER, IMPL_STEP_BY_ENV, PRODUCTIVE_ENVS } from '../lib/workflow'
@@ -53,10 +53,10 @@ export default function Cobertura() {
     let alive = true
     async function load() {
       const [t, s, sys, g, p] = await Promise.all([
-        supabase.from('note_tracks').select('id, admin_id, group_id, note_number, priority, status'),
-        supabase.from('track_steps').select('track_id, step_key, status'),
-        supabase.from('systems').select('*'),
-        supabase.from('system_groups').select('id, name, admin_id'),
+        selectAll<NoteTrack>(() => supabase.from('note_tracks').select('id, admin_id, group_id, note_number, priority, status').order('id')),
+        selectAll<TrackStep>(() => supabase.from('track_steps').select('id, track_id, step_key, status').order('id')),
+        selectAll<SystemRow>(() => supabase.from('systems').select('*').order('id')),
+        selectAll<SystemGroup>(() => supabase.from('system_groups').select('id, name, admin_id').order('id')),
         supabase.from('profiles').select('id, full_name, email'),
       ])
       if (!alive) return

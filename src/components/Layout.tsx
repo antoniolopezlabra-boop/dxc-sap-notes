@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { ShieldCheck, Bell, LogOut, User } from 'lucide-react'
 import { useAuth } from '../ctx/AuthContext'
-import { supabase } from '../lib/supabase'
+import { supabase, selectAll } from '../lib/supabase'
 import { daysStuck, delayLevel } from '../lib/workflow'
 import { Spinner } from './ui'
 
@@ -31,10 +31,11 @@ export default function Layout() {
 
   useEffect(() => {
     if (!session || !profile) return
-    supabase
+    selectAll<{ id: string; status: 'en_progreso'; last_progress_at: string }>(() => supabase
       .from('note_tracks')
       .select('id, status, last_progress_at')
       .eq('status', 'en_progreso')
+      .order('id'))
       .then(({ data }) => {
         const n = (data ?? []).filter((t) => delayLevel(daysStuck(t)) !== 'ok').length
         setDelayed(n)

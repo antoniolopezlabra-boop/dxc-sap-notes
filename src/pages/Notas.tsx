@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Search, FileText, Layers } from 'lucide-react'
-import { supabase } from '../lib/supabase'
+import { supabase, selectAll } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
 import type { NoteTrack, TrackStep, SystemGroup, SystemRow, Profile, Priority } from '../lib/types'
 import { daysStuck, trackProgress, fmtDate } from '../lib/workflow'
@@ -38,10 +38,10 @@ export default function Notas() {
 
   const load = useCallback(async () => {
     const [t, s, g, sys, p] = await Promise.all([
-      supabase.from('note_tracks').select('*, system_groups(name)').order('created_at', { ascending: false }),
-      supabase.from('track_steps').select('id, track_id, step_order, title, status'),
-      supabase.from('system_groups').select('*').order('name'),
-      supabase.from('systems').select('*'),
+      selectAll<NoteTrack>(() => supabase.from('note_tracks').select('*, system_groups(name)').order('created_at', { ascending: false }).order('id')),
+      selectAll<TrackStep>(() => supabase.from('track_steps').select('id, track_id, step_order, title, status').order('id')),
+      selectAll<SystemGroup>(() => supabase.from('system_groups').select('*').order('name').order('id')),
+      selectAll<SystemRow>(() => supabase.from('systems').select('*').order('id')),
       isStaff ? supabase.from('profiles').select('*') : Promise.resolve({ data: [] }),
     ])
     setTracks((t.data as NoteTrack[]) ?? [])

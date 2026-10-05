@@ -25,3 +25,24 @@ export async function adminCall<T = Record<string, unknown>>(
   if (data?.error) throw new Error(data.error)
   return data as T
 }
+
+// PostgREST corta cada respuesta en max_rows (1000 en este proyecto) sin avisar.
+// Para tablas que crecen, pagina con range() hasta traer todas las filas.
+// `build` debe devolver una consulta NUEVA con orden determinista (p. ej. .order('id')).
+type Page = { data: unknown[] | null; error: { message: string } | null }
+type Rangeable = { range: (from: number, to: number) => PromiseLike<Page> }
+
+export async function selectAll<T = unknown>(
+  build: () => Rangeable,
+  pageSize = 1000,
+): Promise<{ data: T[]; error: { message: string } | null }> {
+  const out: T[] = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await build().range(from, from + pageSize - 1)
+    if (error) return { data: out, error }
+    const rows = (data ?? []) as T[]
+    out.push(...rows)
+    if (rows.length < pageSize) break
+  }
+  return { data: out, error: null }
+}
