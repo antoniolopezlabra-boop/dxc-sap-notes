@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   FileText, CheckCircle2, AlertTriangle, Factory, Users, ArrowRight, AlarmClock,
-  Layers, Route, Gauge, ShieldAlert,
+  Layers, Route, ShieldCheck, ShieldAlert,
 } from 'lucide-react'
 import { supabase, selectAll } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
@@ -111,6 +111,7 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     prdByGroup.set(sy.group_id, arr)
   }
   const notes = new Map<string, NotePrd>()
+  const byAdmin = new Map<string, { done: number; pend: number }>()
   for (const v of vms) {
     let n = notes.get(v.note_number)
     if (!n) {
@@ -128,6 +129,9 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     const cur = v.steps.find((s) => s.status === 'en_curso')
     const stage = stageIndex(cur?.step_key)
     for (const sy of prd) {
+      const a = byAdmin.get(v.admin_id) ?? { done: 0, pend: 0 }
+      if (isDone) a.done++; else a.pend++
+      byAdmin.set(v.admin_id, a)
       if (isDone) n.done.push(sy.sid)
       else n.pend.push({
         sid: sy.sid, group: v.system_groups?.name ?? '—', trackId: v.id,
@@ -175,7 +179,7 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     noAplicaron: all.length - inImpl.length,
     sinPrd: inImpl.length - withPrd.length,
     withPrd: withPrd.length,
-    closed, pending, worst, stageOf, stageSummary,
+    closed, pending, worst, stageOf, stageSummary, byAdmin,
     sysDone, sysPend,
     pct: sysDone + sysPend ? Math.round((sysDone / (sysDone + sysPend)) * 100) : 100,
     funnel,
@@ -251,11 +255,7 @@ export default function Dashboard() {
     const delayed = active.filter((v) => v.level !== 'ok')
     const byLevel = { yellow: 0, orange: 0, red: 0 }
     for (const v of delayed) byLevel[v.level as 'yellow' | 'orange' | 'red']++
-    const relevant = vms.filter((v) => v.status !== 'no_aplica')
-    const totalSteps = relevant.reduce((a, v) => a + v.progress.total, 0)
-    const doneSteps = relevant.reduce((a, v) => a + v.progress.done, 0)
-    const pct = totalSteps ? Math.round((doneSteps / totalSteps) * 100) : 0
-    return { active, delayed, byLevel, pct }
+    return { active, delayed, byLevel }
   }, [vms])
 
   const prd = useMemo(() => analyzeProduction(vms, systems), [vms, systems])
@@ -274,14 +274,14 @@ export default function Dashboard() {
         const del = act.filter((v) => v.level !== 'ok')
         const crit = act.filter((v) => v.level === 'red').length
         const worst = del.reduce((m, v) => Math.max(m, v.days), 0)
-        const rel = mine.filter((v) => v.status !== 'no_aplica')
-        const tot = rel.reduce((a, v) => a + v.progress.total, 0)
-        const don = rel.reduce((a, v) => a + v.progress.done, 0)
+        const cov = prd.byAdmin.get(p.id)
+        const covTot = cov ? cov.done + cov.pend : 0
         return {
           p, total: mine.length, act: act.length,
           done: mine.filter((v) => v.status === 'completada').length,
           prdPend: prdPendBy.get(p.id) ?? 0, crit, worst,
-          pct: tot ? Math.round((don / tot) * 100) : 0,
+          prdPct: covTot ? Math.round((cov!.done / covTot) * 100) : null,
+          prdLabel: covTot ? `${cov!.done} de ${covTot} sistemas` : '',
         }
       })
       .filter((r) => r.total > 0)
@@ -353,9 +353,9 @@ export default function Dashboard() {
             <span style={{ color: DELAY_META.red.fg }}>{stats.byLevel.red} rojo</span>
           </span>}
           icon={<AlertTriangle size={19} />} color={stats.delayed.length ? '#fca5a5' : '#34d399'} />
-        <StatCard label="Avance del flujo" value={`${stats.pct}%`}
-          sub="pasos concluidos de las notas aplicables"
-          icon={<Gauge size={19} />} color="#4d8dff" />
+        <StatCard label="Cobertura en Producción" value={`${prd.pct}%`}
+          sub={`${prd.sysDone} de ${prd.sysDone + prd.sysPend} sistemas productivos ya con la nota implementada`}
+          icon={<ShieldCheck size={19} />} color={prd.pct >= 80 ? '#34d399' : '#93c5fd'} />
       </div>
 
       <div className="panel overflow-hidden">
@@ -536,7 +536,7 @@ export default function Dashboard() {
                 <thead>
                   <tr>
                     <th>Administrador</th><th>Tracks</th><th>Activos</th><th>Completados</th>
-                    <th>PRD pendientes</th><th>Críticos</th><th>Peor demora</th><th>Avance</th>
+                    <th>PRD pendientes</th><th>Críticos</th><th>Peor demora</th><th>Cobertura en Producción</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -552,7 +552,11 @@ export default function Dashboard() {
                       <td style={{ color: r.prdPend ? '#fca5a5' : 'var(--muted)', fontWeight: r.prdPend ? 700 : 400 }}>{r.prdPend || '—'}</td>
                       <td style={{ color: r.crit ? '#fca5a5' : 'var(--muted)', fontWeight: r.crit ? 700 : 400 }}>{r.crit || '—'}</td>
                       <td>{r.worst > 0 ? <DelayChip days={r.worst} /> : <span className="text-xs" style={{ color: '#34d399' }}>Sin demoras</span>}</td>
-                      <td><ProgressBar pct={r.pct} /></td>
+                      <td style={{ minWidth: 150 }}>
+                        {r.prdPct == null
+                          ? <span className="text-xs text-[var(--muted)]">Sin sistemas PRD</span>
+                          : <><ProgressBar pct={r.prdPct} /><div className="text-[10.5px] text-[var(--muted)] mt-0.5">{r.prdLabel}</div></>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
