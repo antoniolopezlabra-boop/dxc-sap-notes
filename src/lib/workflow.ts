@@ -22,6 +22,22 @@ export const IMPL_STEP_BY_ENV: Record<Env, string> = {
 // Ambientes considerados "productivos" para el filtro rápido del dashboard de cobertura.
 export const PRODUCTIVE_ENVS: Env[] = ['PRD']
 
+// Etapas del camino hacia Producción, en orden. Agrupan los pasos del flujo para
+// medir qué tan lejos está de PRD un seguimiento pendiente.
+export const PIPELINE_STAGES: { label: string; steps: string[] }[] = [
+  { label: 'Evaluación SNOTE', steps: ['snote'] },
+  { label: 'Desarrollo', steps: ['impl_dev', 'sarox', 'release_ot'] },
+  { label: 'Calidad', steps: ['kit_qa', 'impl_qa'] },
+  { label: 'Pre Producción', steps: ['kit_pre', 'impl_pre'] },
+  { label: 'Aprobación PRD', steps: ['vobo_prd', 'impl_sbx'] },
+  { label: 'Implementación PRD', steps: ['impl_prd'] },
+]
+
+export function stageIndex(stepKey: string | null | undefined): number {
+  const i = PIPELINE_STAGES.findIndex((s) => stepKey != null && s.steps.includes(stepKey))
+  return i < 0 ? 0 : i
+}
+
 // Catálogo de motivos de demora que el administrador puede documentar en un paso.
 export interface DelayReasonDef { key: string; label: string; chart: string }
 export const DELAY_REASONS: DelayReasonDef[] = [

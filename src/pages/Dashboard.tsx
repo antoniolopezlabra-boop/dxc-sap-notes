@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  FileText, Activity, CheckCircle2, AlertTriangle, XCircle, TrendingUp,
-  PieChart as PieIcon, BarChart3, Clock, Users, ArrowRight, AlarmClock,
+  FileText, CheckCircle2, AlertTriangle, Factory, Users, ArrowRight, AlarmClock,
+  Layers, Route, Gauge, ShieldAlert,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../ctx/AuthContext'
-import type { NoteTrack, TrackStep, Profile } from '../lib/types'
+import type { NoteTrack, TrackStep, Profile, SystemRow, Priority } from '../lib/types'
 import {
   daysStuck, delayLevel, trackProgress, DELAY_META, fmtDate, DELAY_REASONS,
+  PIPELINE_STAGES, stageIndex,
 } from '../lib/workflow'
 import {
   Panel, StatCard, Spinner, Empty, PriorityChip, StatusChip, DelayChip, ProgressBar,
 } from '../components/ui'
-import { ActivityArea, PriorityDonut, AdminStackedBars, ProgressGauge, CategoryBars } from '../components/charts'
+import { ProgressGauge, CategoryBars } from '../components/charts'
 
 interface TrackVM extends NoteTrack {
   steps: TrackStep[]
@@ -23,10 +24,23 @@ interface TrackVM extends NoteTrack {
   currentTitle: string
 }
 
+interface PrdPending { sid: string; group: string; trackId: string; stage: number; days: number; adminId: string }
+interface NotePrd {
+  note: string
+  priority: Priority
+  applies: boolean
+  active: boolean
+  done: string[]
+  pend: PrdPending[]
+}
+
+const PRIO_RANK: Record<Priority, number> = { P1: 0, P2: 1, P3: 2 }
+
 function useDashboardData() {
   const { profile } = useAuth()
   const [tracks, setTracks] = useState<NoteTrack[]>([])
   const [steps, setSteps] = useState<TrackStep[]>([])
+  const [systems, setSystems] = useState<SystemRow[]>([])
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -36,14 +50,16 @@ function useDashboardData() {
     if (!profile) return
     let alive = true
     async function load() {
-      const [t, s, p] = await Promise.all([
+      const [t, s, sy, p] = await Promise.all([
         supabase.from('note_tracks').select('*, system_groups(name)').order('created_at', { ascending: false }),
-        supabase.from('track_steps').select('id, track_id, admin_id, step_key, step_order, title, status, started_at, completed_at, description, requires_input, input_value, comment, evidence_path, delay_reason, delay_note, delay_logged_at'),
+        supabase.from('track_steps').select('id, track_id, admin_id, step_key, step_order, title, status, started_at, completed_at, delay_reason, delay_logged_at'),
+        supabase.from('systems').select('id, group_id, sid, environment'),
         isStaff ? supabase.from('profiles').select('*') : Promise.resolve({ data: [] }),
       ])
       if (!alive) return
       setTracks((t.data as NoteTrack[]) ?? [])
       setSteps((s.data as TrackStep[]) ?? [])
+      setSystems((sy.data as SystemRow[]) ?? [])
       setProfiles((p.data as Profile[]) ?? [])
       setLoading(false)
     }
@@ -75,26 +91,71 @@ function useDashboardData() {
     })
   }, [tracks, steps])
 
-  return { vms, steps, profiles, loading, isStaff, profile }
+  return { vms, steps, systems, profiles, loading, isStaff, profile }
 }
 
-function activitySeries(steps: TrackStep[]) {
-  const days: { day: string; pasos: number }[] = []
-  const counts = new Map<string, number>()
-  for (const s of steps) {
-    if (s.status !== 'completado' || !s.completed_at) continue
-    const key = s.completed_at.slice(0, 10)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
+// Análisis por nota del alcance productivo: una nota está "en Producción" cuando
+// todos sus sistemas PRD aplicables ya tienen el paso impl_prd concluido.
+function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
+  const prdByGroup = new Map<string, SystemRow[]>()
+  for (const sy of systems) {
+    if (sy.environment !== 'PRD') continue
+    const arr = prdByGroup.get(sy.group_id) ?? []
+    arr.push(sy)
+    prdByGroup.set(sy.group_id, arr)
   }
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86_400_000)
-    const key = d.toISOString().slice(0, 10)
-    days.push({
-      day: d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }),
-      pasos: counts.get(key) ?? 0,
-    })
+  const notes = new Map<string, NotePrd>()
+  for (const v of vms) {
+    let n = notes.get(v.note_number)
+    if (!n) {
+      n = { note: v.note_number, priority: v.priority, applies: false, active: false, done: [], pend: [] }
+      notes.set(v.note_number, n)
+    }
+    if (PRIO_RANK[v.priority] < PRIO_RANK[n.priority]) n.priority = v.priority
+    if (v.status === 'no_aplica') continue
+    n.applies = true
+    if (v.status === 'en_progreso') n.active = true
+    const prd = prdByGroup.get(v.group_id) ?? []
+    if (!prd.length) continue
+    const implPrd = v.steps.find((s) => s.step_key === 'impl_prd')
+    const isDone = v.status === 'completada' || implPrd?.status === 'completado'
+    const stage = stageIndex(v.steps.find((s) => s.status === 'en_curso')?.step_key)
+    for (const sy of prd) {
+      if (isDone) n.done.push(sy.sid)
+      else n.pend.push({
+        sid: sy.sid, group: v.system_groups?.name ?? '—', trackId: v.id,
+        stage, days: v.days, adminId: v.admin_id,
+      })
+    }
   }
-  return days
+  const all = [...notes.values()]
+  const inImpl = all.filter((n) => n.applies)
+  const withPrd = inImpl.filter((n) => n.done.length + n.pend.length > 0)
+  const closed = withPrd.filter((n) => n.pend.length === 0)
+    .sort((a, b) => a.note.localeCompare(b.note))
+  const worst = (n: NotePrd) => n.pend.reduce((m, p) => Math.max(m, p.days), 0)
+  const pending = withPrd.filter((n) => n.pend.length > 0)
+    .sort((a, b) => worst(b) - worst(a) || b.pend.length - a.pend.length)
+  const sysDone = withPrd.reduce((a, n) => a + n.done.length, 0)
+  const sysPend = withPrd.reduce((a, n) => a + n.pend.length, 0)
+  const funnel = PIPELINE_STAGES.map((s, i) => ({
+    label: s.label,
+    value: pending.reduce((a, n) => a + n.pend.filter((p) => p.stage === i).length, 0),
+    color: i === 0 ? '#ef4444' : '#4d8dff',
+  }))
+  return {
+    total: all.length,
+    inImpl: inImpl.length,
+    enCurso: inImpl.filter((n) => n.active).length,
+    concluidas: inImpl.filter((n) => !n.active).length,
+    noAplicaron: all.length - inImpl.length,
+    sinPrd: inImpl.length - withPrd.length,
+    withPrd: withPrd.length,
+    closed, pending, worst,
+    sysDone, sysPend,
+    pct: sysDone + sysPend ? Math.round((sysDone / (sysDone + sysPend)) * 100) : 100,
+    funnel,
+  }
 }
 
 function DelayedList({ vms, showAdmin, profiles }: { vms: TrackVM[]; showAdmin?: boolean; profiles?: Profile[] }) {
@@ -122,7 +183,6 @@ function DelayedList({ vms, showAdmin, profiles }: { vms: TrackVM[]; showAdmin?:
               </div>
               <div className="text-[11.5px] text-[var(--muted)] truncate">{v.currentTitle}</div>
             </div>
-            <PriorityChip p={v.priority} />
             <DelayChip days={v.days} />
           </button>
         )
@@ -131,29 +191,21 @@ function DelayedList({ vms, showAdmin, profiles }: { vms: TrackVM[]; showAdmin?:
   )
 }
 
-function TracksTable({ vms, showAdmin, profiles, limit = 8 }: {
-  vms: TrackVM[]; showAdmin?: boolean; profiles?: Profile[]; limit?: number
-}) {
+function TracksTable({ vms, limit = 8 }: { vms: TrackVM[]; limit?: number }) {
   const navigate = useNavigate()
   const rows = vms.slice(0, limit)
-  const nameOf = (id: string) => profiles?.find((p) => p.id === id)?.full_name?.split(' ')[0] ?? '—'
   if (!rows.length) return <Empty icon={<FileText size={30} />} title="Aún no hay notas registradas" sub="Registra tu primera nota desde la pestaña Notas." />
   return (
     <div className="overflow-x-auto">
       <table className="tbl">
         <thead>
-          <tr>
-            <th>Nota</th><th>Grupo</th>{showAdmin && <th>Admin</th>}<th>Prioridad</th>
-            <th>Paso actual</th><th>Avance</th><th>Estado</th><th>Días</th>
-          </tr>
+          <tr><th>Nota</th><th>Grupo</th><th>Paso actual</th><th>Avance</th><th>Estado</th><th>Días</th></tr>
         </thead>
         <tbody>
           {rows.map((v) => (
             <tr key={v.id} className="rowlink" onClick={() => navigate(`/tracks/${v.id}`)}>
               <td className="font-bold">{v.note_number}</td>
               <td>{v.system_groups?.name}</td>
-              {showAdmin && <td className="text-[var(--muted)]">{nameOf(v.admin_id)}</td>}
-              <td><PriorityChip p={v.priority} /></td>
               <td className="max-w-[220px] truncate text-[var(--muted)]">{v.currentTitle}</td>
               <td><ProgressBar pct={v.progress.pct} /></td>
               <td><StatusChip s={v.status} /></td>
@@ -167,52 +219,36 @@ function TracksTable({ vms, showAdmin, profiles, limit = 8 }: {
 }
 
 export default function Dashboard() {
-  const { vms, steps, profiles, loading, isStaff, profile } = useDashboardData()
+  const navigate = useNavigate()
+  const { vms, steps, systems, profiles, loading, isStaff, profile } = useDashboardData()
 
   const stats = useMemo(() => {
     const active = vms.filter((v) => v.status === 'en_progreso')
-    const done = vms.filter((v) => v.status === 'completada')
-    const na = vms.filter((v) => v.status === 'no_aplica')
     const delayed = active.filter((v) => v.level !== 'ok')
     const byLevel = { yellow: 0, orange: 0, red: 0 }
     for (const v of delayed) byLevel[v.level as 'yellow' | 'orange' | 'red']++
-    const uniqueActive = new Set(active.map((v) => v.note_number)).size
-    const uniqueTotal = new Set(vms.map((v) => v.note_number)).size
     const relevant = vms.filter((v) => v.status !== 'no_aplica')
     const totalSteps = relevant.reduce((a, v) => a + v.progress.total, 0)
     const doneSteps = relevant.reduce((a, v) => a + v.progress.done, 0)
     const pct = totalSteps ? Math.round((doneSteps / totalSteps) * 100) : 0
-    const prio = (['P1', 'P2', 'P3'] as const).map((p) => ({
-      name: p,
-      value: new Set(active.filter((v) => v.priority === p).map((v) => v.note_number)).size,
-    }))
-    return { active, done, na, delayed, byLevel, uniqueActive, uniqueTotal, pct, prio }
+    return { active, delayed, byLevel, pct }
   }, [vms])
 
-  const adminBars = useMemo(() => {
-    if (!isStaff) return []
-    return profiles
-      .filter((p) => p.role === 'admin')
-      .map((p) => {
-        const mine = vms.filter((v) => v.admin_id === p.id)
-        return {
-          name: p.full_name?.split(' ')[0] ?? p.email.split('@')[0],
-          'En progreso': mine.filter((v) => v.status === 'en_progreso').length,
-          Completada: mine.filter((v) => v.status === 'completada').length,
-          'No aplica': mine.filter((v) => v.status === 'no_aplica').length,
-        }
-      })
-      .filter((r) => r['En progreso'] + r.Completada + r['No aplica'] > 0)
-  }, [isStaff, profiles, vms])
+  const prd = useMemo(() => analyzeProduction(vms, systems), [vms, systems])
+
+  const nameOf = (id: string) => profiles.find((p) => p.id === id)?.full_name?.split(' ')[0] ?? '—'
 
   const adminRows = useMemo(() => {
     if (!isStaff) return []
+    const prdPendBy = new Map<string, number>()
+    for (const n of prd.pending) for (const p of n.pend) prdPendBy.set(p.adminId, (prdPendBy.get(p.adminId) ?? 0) + 1)
     return profiles
       .filter((p) => p.role === 'admin')
       .map((p) => {
         const mine = vms.filter((v) => v.admin_id === p.id)
         const act = mine.filter((v) => v.status === 'en_progreso')
         const del = act.filter((v) => v.level !== 'ok')
+        const crit = act.filter((v) => v.level === 'red').length
         const worst = del.reduce((m, v) => Math.max(m, v.days), 0)
         const rel = mine.filter((v) => v.status !== 'no_aplica')
         const tot = rel.reduce((a, v) => a + v.progress.total, 0)
@@ -220,11 +256,13 @@ export default function Dashboard() {
         return {
           p, total: mine.length, act: act.length,
           done: mine.filter((v) => v.status === 'completada').length,
-          delayed: del.length, worst,
+          prdPend: prdPendBy.get(p.id) ?? 0, crit, worst,
           pct: tot ? Math.round((don / tot) * 100) : 0,
         }
       })
-  }, [isStaff, profiles, vms])
+      .filter((r) => r.total > 0)
+      .sort((a, b) => b.crit - a.crit || b.prdPend - a.prdPend)
+  }, [isStaff, profiles, vms, prd])
 
   // Motivos de atraso: pasos activos (no completados) con un motivo de demora documentado.
   const delayStats = useMemo(() => {
@@ -245,10 +283,11 @@ export default function Dashboard() {
 
   if (loading) return <Spinner label="Cargando dashboard…" />
 
-  const title = isStaff ? 'Panorama general del equipo' : 'Mi panel de seguimiento'
+  const title = isStaff ? 'Avance general de vulnerabilidades en Focus Run' : 'Mi panel de seguimiento'
   const sub = isStaff
-    ? 'Visibilidad consolidada del trabajo de todos los administradores'
-    : `Seguimiento de tus notas y sistemas asignados`
+    ? 'Estado de la remediación con foco en los ambientes productivos'
+    : 'Seguimiento de tus notas y sistemas asignados'
+  const notStarted = prd.funnel[0]?.value ?? 0
 
   return (
     <div className="flex flex-col gap-4">
@@ -262,126 +301,195 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* KPIs */}
-      <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
-        <StatCard label="Notas únicas activas" value={stats.uniqueActive} sub={`${stats.uniqueTotal} registradas en total`}
+      {/* KPIs ejecutivos */}
+      <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+        <StatCard label="Notas en implementación" value={prd.inImpl}
+          sub={<>{prd.enCurso} en curso · {prd.concluidas} concluidas · {prd.noAplicaron} no aplicaron</>}
           icon={<FileText size={19} />} color="#93c5fd" />
-        <StatCard label="Tracks en progreso" value={stats.active.length} sub="Sistemas pendientes por remediar"
-          icon={<Activity size={19} />} color="#4d8dff" />
-        <StatCard label="Completados" value={stats.done.length} sub="Implementados hasta Producción"
+        <StatCard label="En Producción" value={prd.closed.length}
+          sub={`notas cerradas de ${prd.withPrd} con alcance productivo`}
           icon={<CheckCircle2 size={19} />} color="#34d399" />
-        <StatCard label="Con demora" value={stats.delayed.length}
+        <StatCard label="Pendientes en Producción" value={prd.pending.length}
+          sub={`${prd.sysPend} sistema${prd.sysPend === 1 ? '' : 's'} productivo${prd.sysPend === 1 ? '' : 's'} por implementar`}
+          icon={<Factory size={19} />} color={prd.pending.length ? '#fca5a5' : '#34d399'} />
+        <StatCard label="Seguimientos con demora" value={stats.delayed.length}
           sub={<span>
             <span style={{ color: DELAY_META.yellow.fg }}>{stats.byLevel.yellow} amarillo</span> ·{' '}
             <span style={{ color: DELAY_META.orange.fg }}>{stats.byLevel.orange} naranja</span> ·{' '}
             <span style={{ color: DELAY_META.red.fg }}>{stats.byLevel.red} rojo</span>
           </span>}
           icon={<AlertTriangle size={19} />} color={stats.delayed.length ? '#fca5a5' : '#34d399'} />
-        <StatCard label="No aplicaron" value={stats.na.length} sub="Notas no implementables"
-          icon={<XCircle size={19} />} color="#a8b6d4" />
+        <StatCard label="Avance del flujo" value={`${stats.pct}%`}
+          sub="pasos concluidos de las notas aplicables"
+          icon={<Gauge size={19} />} color="#4d8dff" />
       </div>
 
-      {/* Charts row */}
-      <div className="grid-charts">
-        <Panel title="Actividad · pasos completados (últimos 30 días)" icon={<TrendingUp size={15} />} bodyClass="p-2 pt-3">
-          <ActivityArea data={activitySeries(steps)} />
+      {/* Producción: cobertura + distancia */}
+      <div className="grid-split">
+        <Panel title="Cobertura en Producción" icon={<Factory size={15} />} bodyClass="p-4">
+          <div className="flex items-center gap-6 flex-wrap">
+            <ProgressGauge pct={prd.pct} label="Sistemas PRD" />
+            <div className="flex-1 min-w-[220px] flex flex-col gap-2.5">
+              <div className="flex items-center gap-2.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#059669' }} />
+                <span className="text-[13px] flex-1">Notas ya en Producción</span>
+                <span className="text-[17px] font-extrabold" style={{ color: '#34d399' }}>{prd.closed.length}</span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#ef4444' }} />
+                <span className="text-[13px] flex-1">Notas pendientes en Producción</span>
+                <span className="text-[17px] font-extrabold" style={{ color: '#fca5a5' }}>{prd.pending.length}</span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#64748b' }} />
+                <span className="text-[13px] flex-1">Sin alcance productivo</span>
+                <span className="text-[17px] font-extrabold text-[var(--muted)]">{prd.sinPrd}</span>
+              </div>
+              <div className="text-[11.5px] text-[var(--muted)] pt-2 border-t border-[var(--border)]">
+                Sistemas productivos: <b style={{ color: '#34d399' }}>{prd.sysDone}</b> implementados ·{' '}
+                <b style={{ color: '#fca5a5' }}>{prd.sysPend}</b> pendientes
+              </div>
+            </div>
+          </div>
+          {prd.closed.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-[var(--border)]">
+              <div className="text-[11px] uppercase tracking-wide font-bold text-[var(--muted)] mb-2">Notas implementadas en Producción</div>
+              <div className="flex flex-wrap gap-1.5">
+                {prd.closed.map((n) => (
+                  <span key={n.note} className="chip cursor-pointer" onClick={() => navigate(`/notas?q=${n.note}`)}
+                    title={`${n.done.length} sistema(s) PRD implementado(s)`}
+                    style={{ color: '#6ee7b7', background: 'rgba(5,150,105,.12)', borderColor: 'rgba(16,185,129,.4)' }}>
+                    <CheckCircle2 size={11} /> {n.note}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </Panel>
-        <Panel title="Avance de implementación" icon={<Clock size={15} />} bodyClass="p-4 flex flex-col items-center justify-center gap-2">
-          <ProgressGauge pct={stats.pct} />
-          <div className="text-[11.5px] text-[var(--muted)]">Restante: <b className="text-[var(--text)]">{100 - stats.pct}%</b></div>
-        </Panel>
-        <Panel title="Notas activas por prioridad" icon={<PieIcon size={15} />} bodyClass="p-4 flex items-center justify-center">
-          <PriorityDonut data={stats.prio} centerLabel="activas" />
+
+        <Panel title="¿Qué tan lejos están de Producción?" icon={<Route size={15} />} bodyClass="p-4">
+          {prd.sysPend ? (
+            <>
+              <CategoryBars data={prd.funnel} />
+              <div className="text-[11.5px] text-[var(--muted)] mt-3 pt-3 border-t border-[var(--border)]">
+                Sistemas productivos pendientes según la etapa en que va su seguimiento.
+                {notStarted > 0 && <> <b style={{ color: '#fca5a5' }}>{notStarted} de {prd.sysPend}</b> ni siquiera han iniciado (siguen en evaluación SNOTE).</>}
+              </div>
+            </>
+          ) : (
+            <Empty icon={<CheckCircle2 size={30} />} title="Sin pendientes en Producción" sub="Todas las notas con alcance productivo ya están implementadas." />
+          )}
         </Panel>
       </div>
 
-      {/* Delays + per-admin or recent */}
+      {/* La lista clave */}
+      <Panel title={`Notas pendientes de implementar en Producción · ${prd.pending.length}`} icon={<ShieldAlert size={15} />} bodyClass="p-0">
+        {prd.pending.length ? (
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Nota</th><th>Prioridad</th><th>Avance en PRD</th><th>Sistemas productivos pendientes</th>
+                  <th>Etapa más atrasada</th><th>Sin avance</th>{isStaff && <th>Responsable</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {prd.pending.map((n) => {
+                  const tot = n.done.length + n.pend.length
+                  const farthest = n.pend.reduce((m, p) => Math.min(m, p.stage), PIPELINE_STAGES.length - 1)
+                  const admins = [...new Set(n.pend.map((p) => p.adminId))]
+                  return (
+                    <tr key={n.note} className="rowlink" onClick={() => navigate(`/notas?q=${n.note}`)}>
+                      <td className="font-bold">{n.note}</td>
+                      <td><PriorityChip p={n.priority} /></td>
+                      <td style={{ minWidth: 150 }}>
+                        <ProgressBar pct={Math.round((n.done.length / tot) * 100)} />
+                        <div className="text-[10.5px] text-[var(--muted)] mt-0.5">{n.done.length} de {tot} sistemas PRD</div>
+                      </td>
+                      <td>
+                        <div className="flex flex-wrap gap-1.5">
+                          {n.pend.map((p, i) => (
+                            <span key={i} className="chip"
+                              title={`${p.group} · ${PIPELINE_STAGES[p.stage].label} · ${p.days} d háb.`}
+                              style={{ color: '#fca5a5', background: 'rgba(239,68,68,.12)', borderColor: 'rgba(239,68,68,.45)' }}>
+                              {p.sid}<span className="opacity-70 font-normal ml-0.5">· {p.group}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="text-[12.5px]" style={{ color: farthest === 0 ? '#fca5a5' : 'var(--muted)' }}>
+                        {PIPELINE_STAGES[farthest].label}
+                      </td>
+                      <td><DelayChip days={prd.worst(n)} showOk /></td>
+                      {isStaff && <td className="text-[var(--muted)] text-[12.5px]">{admins.map(nameOf).join(', ')}</td>}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty icon={<CheckCircle2 size={30} />} title="Ninguna nota pendiente en Producción" sub="Todas las notas con alcance productivo ya están implementadas en PRD." />
+        )}
+      </Panel>
+
+      {/* Atención inmediata */}
       <div className={isStaff ? 'grid-split' : 'grid-split-23'}>
         <Panel title="Demoras — requieren atención" icon={<AlertTriangle size={15} />} bodyClass="p-0">
           <DelayedList vms={vms} showAdmin={isStaff} profiles={profiles} />
         </Panel>
         {isStaff ? (
-          <Panel title="Tracks por administrador" icon={<BarChart3 size={15} />} bodyClass="p-2 pt-3">
-            {adminBars.length
-              ? <AdminStackedBars data={adminBars} />
-              : <Empty icon={<Users size={30} />} title="Sin administradores con notas" sub="Cuando los administradores registren notas, aquí verás su carga de trabajo." />}
+          <Panel title="Motivos de atraso" icon={<AlarmClock size={15} />} bodyClass="p-4"
+            actions={<span className="text-[11.5px] text-[var(--muted)]">{delayStats.total} con motivo documentado</span>}>
+            <CategoryBars data={delayStats.rows} />
+            <div className="text-[11.5px] text-[var(--muted)] mt-3 pt-3 border-t border-[var(--border)]">
+              {delayStats.top ? (
+                <>Principal motivo: <b style={{ color: delayStats.top.color }}>{delayStats.top.label}</b>{' '}
+                  ({delayStats.top.value} de {delayStats.total}).{' '}
+                  {stats.active.length - delayStats.total > 0 && <>{stats.active.length - delayStats.total} seguimientos activos no tienen motivo documentado.</>}
+                </>
+              ) : 'Sin demoras documentadas por el equipo.'}
+            </div>
           </Panel>
         ) : (
-          <Panel title="Mis tracks recientes" icon={<FileText size={15} />} bodyClass="p-0">
+          <Panel title="Mis tracks recientes" icon={<Layers size={15} />} bodyClass="p-0">
             <TracksTable vms={vms} />
           </Panel>
         )}
       </div>
 
-      {/* Staff: motivos de atraso */}
       {isStaff && (
-        <Panel title="Motivos de atraso" icon={<AlarmClock size={15} />} bodyClass="p-4"
-          actions={<span className="text-[11.5px] text-[var(--muted)]">
-            {delayStats.total} paso{delayStats.total === 1 ? '' : 's'} con demora documentada
-          </span>}>
-          <div className="grid gap-4" style={{ gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr)' }}>
-            <CategoryBars data={delayStats.rows} />
-            <div className="flex flex-col justify-center gap-1.5 border-l border-[var(--border)] pl-4">
-              <div className="text-[11px] uppercase tracking-wide font-bold text-[var(--muted)]">Principal motivo</div>
-              {delayStats.top ? (
-                <>
-                  <div className="text-[15px] font-extrabold" style={{ color: delayStats.top.color }}>{delayStats.top.label}</div>
-                  <div className="text-[12px] text-[var(--muted)]">
-                    {delayStats.top.value} de {delayStats.total} demoras
-                    {delayStats.total ? ` (${Math.round((delayStats.top.value / delayStats.total) * 100)}%)` : ''}
-                  </div>
-                </>
-              ) : (
-                <div className="text-[13px] text-[var(--muted)]">Sin demoras documentadas por el equipo.</div>
-              )}
-              <div className="text-[11px] text-[var(--muted)] mt-1.5">
-                Cuenta pasos activos donde un administrador documentó una demora.
-              </div>
-            </div>
-          </div>
-        </Panel>
-      )}
-
-      {/* Staff: per-admin table + recent tracks */}
-      {isStaff && (
-        <>
-          <Panel title="Detalle por administrador" icon={<Users size={15} />} bodyClass="p-0">
-            {adminRows.length ? (
-              <div className="overflow-x-auto">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>Administrador</th><th>Tracks</th><th>Activos</th><th>Completados</th>
-                      <th>Con demora</th><th>Peor demora</th><th>Avance</th>
+        <Panel title="Desempeño por administrador" icon={<Users size={15} />} bodyClass="p-0">
+          {adminRows.length ? (
+            <div className="overflow-x-auto">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Administrador</th><th>Tracks</th><th>Activos</th><th>Completados</th>
+                    <th>PRD pendientes</th><th>Críticos</th><th>Peor demora</th><th>Avance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adminRows.map((r) => (
+                    <tr key={r.p.id}>
+                      <td>
+                        <div className="font-bold">{r.p.full_name ?? '—'}</div>
+                        <div className="text-[11px] text-[var(--muted)]">{r.p.email}</div>
+                      </td>
+                      <td className="font-bold">{r.total}</td>
+                      <td>{r.act}</td>
+                      <td style={{ color: '#34d399' }}>{r.done}</td>
+                      <td style={{ color: r.prdPend ? '#fca5a5' : 'var(--muted)', fontWeight: r.prdPend ? 700 : 400 }}>{r.prdPend || '—'}</td>
+                      <td style={{ color: r.crit ? '#fca5a5' : 'var(--muted)', fontWeight: r.crit ? 700 : 400 }}>{r.crit || '—'}</td>
+                      <td>{r.worst > 0 ? <DelayChip days={r.worst} /> : <span className="text-xs" style={{ color: '#34d399' }}>Sin demoras</span>}</td>
+                      <td><ProgressBar pct={r.pct} /></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {adminRows.map((r) => (
-                      <tr key={r.p.id}>
-                        <td>
-                          <div className="font-bold">{r.p.full_name ?? '—'}</div>
-                          <div className="text-[11px] text-[var(--muted)]">{r.p.email}</div>
-                        </td>
-                        <td className="font-bold">{r.total}</td>
-                        <td>{r.act}</td>
-                        <td style={{ color: '#34d399' }}>{r.done}</td>
-                        <td>{r.delayed > 0
-                          ? <DelayChip days={r.worst} />
-                          : <span className="text-xs" style={{ color: '#34d399' }}>Sin demoras</span>}
-                        </td>
-                        <td className="text-[var(--muted)]">{r.worst > 0 ? `${r.worst} días` : '—'}</td>
-                        <td><ProgressBar pct={r.pct} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : <Empty icon={<Users size={30} />} title="Sin administradores registrados" sub="Crea administradores desde la consola de Usuarios." />}
-          </Panel>
-          <Panel title="Tracks recientes (todos los administradores)" icon={<FileText size={15} />} bodyClass="p-0">
-            <TracksTable vms={vms} showAdmin profiles={profiles} limit={10} />
-          </Panel>
-        </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <Empty icon={<Users size={30} />} title="Sin administradores con actividad" sub="Crea administradores desde la consola de Usuarios." />}
+        </Panel>
       )}
 
       {!isStaff && vms.some((v) => v.status === 'en_progreso') && (
