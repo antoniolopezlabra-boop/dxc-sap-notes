@@ -66,10 +66,12 @@ export function CategoryBars({ data }: {
             {d.label}
           </div>
           <div className="flex-1 h-[22px] rounded-md overflow-hidden" style={{ background: '#0a142b', border: '1px solid #1a2c50' }}>
-            <div className="h-full rounded-md flex items-center justify-end pr-2"
+            {d.value > 0 && (
+              <div className="h-full rounded-md flex items-center justify-end pr-2"
               style={{ width: d.value ? `${Math.max(4, (d.value / max) * 100)}%` : '0%', background: d.color, minWidth: d.value ? 24 : 0 }}>
               {d.value > 0 && <span className="text-[11px] font-extrabold" style={{ color: '#0b1220' }}>{d.value}</span>}
             </div>
+            )}
           </div>
         </div>
       ))}
