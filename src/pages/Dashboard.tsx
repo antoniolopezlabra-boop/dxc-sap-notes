@@ -12,7 +12,7 @@ import {
   PIPELINE_STAGES, stageIndex,
 } from '../lib/workflow'
 import {
-  Panel, StatCard, Spinner, Empty, PriorityChip, StatusChip, DelayChip, ProgressBar,
+  Panel, StatCard, Spinner, Empty, PriorityChip, StatusChip, DelayChip, ProgressBar, Reading,
 } from '../components/ui'
 import { ProgressGauge, CategoryBars } from '../components/charts'
 
@@ -35,6 +35,12 @@ interface NotePrd {
 }
 
 const PRIO_RANK: Record<Priority, number> = { P1: 0, P2: 1, P3: 2 }
+
+const RED = '#fca5a5', GREEN = '#34d399', BLUE = '#93c5fd'
+function Hl({ c = '#e9f0ff', children }: { c?: string; children: React.ReactNode }) {
+  return <b style={{ color: c }}>{children}</b>
+}
+const plural = (n: number, s: string, p = s + 's') => (n === 1 ? s : p)
 
 function useDashboardData() {
   const { profile } = useAuth()
@@ -288,6 +294,13 @@ export default function Dashboard() {
     ? 'Estado de la remediación con foco en los ambientes productivos'
     : 'Seguimiento de tus notas y sistemas asignados'
   const notStarted = prd.funnel[0]?.value ?? 0
+  const tus = isStaff ? '' : 'tus '
+  const critNotes = prd.pending.filter((n) => prd.worst(n) >= 15).length
+  const topPending = prd.pending[0]
+  const maxStage = prd.funnel.reduce((m, f) => (f.value > m.value ? f : m), prd.funnel[0])
+  const sinMotivo = Math.max(0, stats.active.length - delayStats.total)
+  const topAdmin = adminRows.find((r) => r.crit > 0)
+  const idleAdmins = adminRows.filter((r) => r.act === 0).length
 
   return (
     <div className="flex flex-col gap-4">
@@ -324,9 +337,28 @@ export default function Dashboard() {
           icon={<Gauge size={19} />} color="#4d8dff" />
       </div>
 
+      <div className="panel overflow-hidden">
+        <Reading flush>
+          <b className="text-[var(--text)]">Lectura general:</b> de {tus}<Hl c={BLUE}>{prd.inImpl}</Hl> notas en implementación,{' '}
+          <Hl c={GREEN}>{prd.closed.length}</Hl> ya están cerradas en Producción y <Hl c={RED}>{prd.pending.length}</Hl> siguen
+          abiertas en <Hl c={RED}>{prd.sysPend}</Hl> {plural(prd.sysPend, 'sistema productivo', 'sistemas productivos')}.{' '}
+          {stats.byLevel.red > 0
+            ? <><Hl c={RED}>{stats.byLevel.red}</Hl> {plural(stats.byLevel.red, 'seguimiento está', 'seguimientos están')} en rojo (15+ días hábiles sin avance).</>
+            : <>Ningún seguimiento está en rojo.</>}
+        </Reading>
+      </div>
+
       {/* Producción: cobertura + distancia */}
       <div className="grid-split">
-        <Panel title="Cobertura en Producción" icon={<Factory size={15} />} bodyClass="p-4">
+        <Panel title="Cobertura en Producción" icon={<Factory size={15} />} bodyClass="p-4"
+          reading={prd.sysPend + prd.sysDone === 0 ? 'Aún no hay notas con alcance en sistemas productivos.' : <>
+            Mide qué tanto del riesgo ya se cerró donde más importa: los sistemas productivos.{' '}
+            {prd.sysPend === 0
+              ? <>Todos los sistemas productivos ya tienen sus notas implementadas.</>
+              : <>Hoy el <Hl c={BLUE}>{prd.pct}%</Hl> de los sistemas PRD ya tiene la nota implementada; quedan{' '}
+                <Hl c={RED}>{prd.sysPend}</Hl> {plural(prd.sysPend, 'sistema pendiente', 'sistemas pendientes')} repartidos en{' '}
+                <Hl c={RED}>{prd.pending.length}</Hl> {plural(prd.pending.length, 'nota', 'notas')}.</>}
+          </>}>
           <div className="flex items-center gap-6 flex-wrap">
             <ProgressGauge pct={prd.pct} label="Sistemas PRD" />
             <div className="flex-1 min-w-[220px] flex flex-col gap-2.5">
@@ -367,14 +399,16 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        <Panel title="¿Qué tan lejos están de Producción?" icon={<Route size={15} />} bodyClass="p-4">
+        <Panel title="¿Qué tan lejos están de Producción?" icon={<Route size={15} />} bodyClass="p-4"
+          reading={<>
+            Ubica cada sistema productivo pendiente en la etapa donde va su seguimiento: entre más arriba, más lejos está de Producción.{' '}
+            {prd.sysPend > 0 && (notStarted * 2 >= prd.sysPend
+              ? <><Hl c={RED}>{notStarted} de {prd.sysPend}</Hl> ni siquiera han iniciado (siguen en evaluación SNOTE): el cuello de botella está en el arranque, no en las autorizaciones.</>
+              : <>La mayor concentración está en <Hl c={BLUE}>{maxStage.label}</Hl> ({maxStage.value} {plural(maxStage.value, 'sistema')}).</>)}
+          </>}>
           {prd.sysPend ? (
             <>
               <CategoryBars data={prd.funnel} />
-              <div className="text-[11.5px] text-[var(--muted)] mt-3 pt-3 border-t border-[var(--border)]">
-                Sistemas productivos pendientes según la etapa en que va su seguimiento.
-                {notStarted > 0 && <> <b style={{ color: '#fca5a5' }}>{notStarted} de {prd.sysPend}</b> ni siquiera han iniciado (siguen en evaluación SNOTE).</>}
-              </div>
             </>
           ) : (
             <Empty icon={<CheckCircle2 size={30} />} title="Sin pendientes en Producción" sub="Todas las notas con alcance productivo ya están implementadas." />
@@ -383,7 +417,12 @@ export default function Dashboard() {
       </div>
 
       {/* La lista clave */}
-      <Panel title={`Notas pendientes de implementar en Producción · ${prd.pending.length}`} icon={<ShieldAlert size={15} />} bodyClass="p-0">
+      <Panel title={`Notas pendientes de implementar en Producción · ${prd.pending.length}`} icon={<ShieldAlert size={15} />} bodyClass="p-0"
+        reading={<>
+          Es la lista de trabajo para cerrar Producción: cada fila es una nota con al menos un sistema productivo sin implementar, de la más atrasada a la menos.{' '}
+          {topPending && <>La más atrasada es la <Hl>{topPending.note}</Hl> con <Hl c={RED}>{prd.worst(topPending)} días hábiles</Hl> sin avance;{' '}
+            <Hl c={RED}>{critNotes} de {prd.pending.length}</Hl> {plural(prd.pending.length, 'nota está', 'notas están')} en rojo.</>}
+        </>}>
         {prd.pending.length ? (
           <div className="overflow-x-auto">
             <table className="tbl">
@@ -435,31 +474,41 @@ export default function Dashboard() {
 
       {/* Atención inmediata */}
       <div className={isStaff ? 'grid-split' : 'grid-split-23'}>
-        <Panel title="Demoras — requieren atención" icon={<AlertTriangle size={15} />} bodyClass="p-0">
+        <Panel title="Demoras — requieren atención" icon={<AlertTriangle size={15} />} bodyClass="p-0"
+          reading={<>
+            Seguimientos con 5 o más días hábiles sin avance, del más atrasado al menos (se muestran los 8 principales).{' '}
+            {stats.delayed.length
+              ? <>Hoy son <Hl c={RED}>{stats.delayed.length}</Hl>, de los cuales <Hl c={RED}>{stats.byLevel.red}</Hl> {plural(stats.byLevel.red, 'está', 'están')} en rojo.</>
+              : <>Hoy ninguno rebasa ese umbral.</>}
+          </>}>
           <DelayedList vms={vms} showAdmin={isStaff} profiles={profiles} />
         </Panel>
         {isStaff ? (
           <Panel title="Motivos de atraso" icon={<AlarmClock size={15} />} bodyClass="p-4"
+            reading={<>
+              Explica por qué no avanzan los seguimientos, según lo que documentan los administradores.{' '}
+              {delayStats.top && <>La causa principal es <Hl c={delayStats.top.color}>{delayStats.top.label}</Hl> ({delayStats.top.value} de {delayStats.total}).{' '}</>}
+              {sinMotivo > 0 && <><Hl c={RED}>{sinMotivo}</Hl> {plural(sinMotivo, 'seguimiento activo no tiene', 'seguimientos activos no tienen')} motivo registrado, así que su causa se desconoce.</>}
+            </>}
             actions={<span className="text-[11.5px] text-[var(--muted)]">{delayStats.total} con motivo documentado</span>}>
             <CategoryBars data={delayStats.rows} />
-            <div className="text-[11.5px] text-[var(--muted)] mt-3 pt-3 border-t border-[var(--border)]">
-              {delayStats.top ? (
-                <>Principal motivo: <b style={{ color: delayStats.top.color }}>{delayStats.top.label}</b>{' '}
-                  ({delayStats.top.value} de {delayStats.total}).{' '}
-                  {stats.active.length - delayStats.total > 0 && <>{stats.active.length - delayStats.total} seguimientos activos no tienen motivo documentado.</>}
-                </>
-              ) : 'Sin demoras documentadas por el equipo.'}
-            </div>
           </Panel>
         ) : (
-          <Panel title="Mis tracks recientes" icon={<Layers size={15} />} bodyClass="p-0">
+          <Panel title="Mis tracks recientes" icon={<Layers size={15} />} bodyClass="p-0"
+            reading="Tus seguimientos más recientes con el paso en que van; da clic en uno para documentar su avance.">
             <TracksTable vms={vms} />
           </Panel>
         )}
       </div>
 
       {isStaff && (
-        <Panel title="Desempeño por administrador" icon={<Users size={15} />} bodyClass="p-0">
+        <Panel title="Desempeño por administrador" icon={<Users size={15} />} bodyClass="p-0"
+          reading={<>
+            Compara la carga y el atraso de cada administrador, ordenados por quién tiene más seguimientos críticos.{' '}
+            {topAdmin && <><Hl>{topAdmin.p.full_name ?? topAdmin.p.email}</Hl> concentra <Hl c={RED}>{topAdmin.crit}</Hl> {plural(topAdmin.crit, 'crítico')}
+              {topAdmin.prdPend > 0 && <> y <Hl c={RED}>{topAdmin.prdPend}</Hl> {plural(topAdmin.prdPend, 'sistema productivo pendiente', 'sistemas productivos pendientes')}</>}.{' '}</>}
+            {idleAdmins > 0 && <><Hl c={GREEN}>{idleAdmins}</Hl> {plural(idleAdmins, 'administrador no tiene', 'administradores no tienen')} seguimientos abiertos.</>}
+          </>}>
           {adminRows.length ? (
             <div className="overflow-x-auto">
               <table className="tbl">

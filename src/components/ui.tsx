@@ -1,13 +1,14 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { X, Lightbulb } from 'lucide-react'
 import { DELAY_META, PRIORITY_META, STATUS_META, delayLevel } from '../lib/workflow'
 
 export function Panel({
-  title, icon, actions, children, className = '', bodyClass = '',
+  title, icon, actions, reading, children, className = '', bodyClass = '',
 }: {
   title?: ReactNode
   icon?: ReactNode
   actions?: ReactNode
+  reading?: ReactNode
   children: ReactNode
   className?: string
   bodyClass?: string
@@ -23,7 +24,19 @@ export function Panel({
           {actions}
         </div>
       )}
+      {reading && <Reading>{reading}</Reading>}
       <div className={bodyClass || 'p-4'}>{children}</div>
+    </div>
+  )
+}
+
+// Lectura breve de un panel: qué mide y qué dice hoy.
+export function Reading({ children, className = '', flush = false }: { children: ReactNode; className?: string; flush?: boolean }) {
+  return (
+    <div className={`px-4 py-2.5 text-[12px] leading-relaxed flex gap-2 ${flush ? '' : 'border-b border-[var(--border)]'} ${className}`}
+      style={{ background: 'rgba(77,141,255,.045)', color: '#a9bbd9' }}>
+      <Lightbulb size={13} className="shrink-0 mt-[2px]" style={{ color: '#f0b940' }} />
+      <div>{children}</div>
     </div>
   )
 }
