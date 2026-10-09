@@ -9,7 +9,7 @@ import { useAuth } from '../ctx/AuthContext'
 import type { NoteTrack, TrackStep, Profile, SystemRow, Priority } from '../lib/types'
 import {
   daysStuck, delayLevel, trackProgress, DELAY_META, fmtDate, DELAY_REASONS,
-  PIPELINE_STAGES, stageIndex, delayReasonLabel,
+  PIPELINE_STAGES, stageIndex, delayReasonLabel, IMPL_STEP_BY_ENV,
 } from '../lib/workflow'
 import {
   Panel, StatCard, Spinner, Empty, PriorityChip, StatusChip, DelayChip, ProgressBar, Reading,
@@ -110,6 +110,14 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     arr.push(sy)
     prdByGroup.set(sy.group_id, arr)
   }
+  const allByGroup = new Map<string, SystemRow[]>()
+  for (const sy of systems) {
+    const arr = allByGroup.get(sy.group_id) ?? []
+    arr.push(sy)
+    allByGroup.set(sy.group_id, arr)
+  }
+  // Implementación general: cada nota en cada sistema aplicable (todos los ambientes).
+  let allDone = 0, allTot = 0
   const notes = new Map<string, NotePrd>()
   const byAdmin = new Map<string, { done: number; pend: number }>()
   for (const v of vms) {
@@ -122,6 +130,11 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     if (v.status === 'no_aplica') continue
     n.applies = true
     if (v.status === 'en_progreso') n.active = true
+    for (const sy of allByGroup.get(v.group_id) ?? []) {
+      const key = IMPL_STEP_BY_ENV[sy.environment]
+      allTot++
+      if (v.status === 'completada' || v.steps.some((s) => s.step_key === key && s.status === 'completado')) allDone++
+    }
     const prd = prdByGroup.get(v.group_id) ?? []
     if (!prd.length) continue
     const implPrd = v.steps.find((s) => s.step_key === 'impl_prd')
@@ -180,6 +193,7 @@ function analyzeProduction(vms: TrackVM[], systems: SystemRow[]) {
     sinPrd: inImpl.length - withPrd.length,
     withPrd: withPrd.length,
     closed, pending, worst, stageOf, stageSummary, byAdmin,
+    allDone, allTot, allPct: allTot ? Math.round((allDone / allTot) * 100) : 0,
     sysDone, sysPend,
     pct: sysDone + sysPend ? Math.round((sysDone / (sysDone + sysPend)) * 100) : 100,
     funnel,
@@ -353,9 +367,9 @@ export default function Dashboard() {
             <span style={{ color: DELAY_META.red.fg }}>{stats.byLevel.red} rojo</span>
           </span>}
           icon={<AlertTriangle size={19} />} color={stats.delayed.length ? '#fca5a5' : '#34d399'} />
-        <StatCard label="Cobertura en Producción" value={`${prd.pct}%`}
-          sub={`${prd.sysDone} de ${prd.sysDone + prd.sysPend} sistemas productivos ya con la nota implementada`}
-          icon={<ShieldCheck size={19} />} color={prd.pct >= 80 ? '#34d399' : '#93c5fd'} />
+        <StatCard label="Implementación general" value={`${prd.allPct}%`}
+          sub={`${prd.allDone} de ${prd.allTot} implementaciones concluidas en todos los ambientes`}
+          icon={<ShieldCheck size={19} />} color={prd.allPct >= 80 ? '#34d399' : '#93c5fd'} />
       </div>
 
       <div className="panel overflow-hidden">
